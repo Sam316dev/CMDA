@@ -120,6 +120,7 @@ async function safeSet(key, value, shared = false) {
 }
 
 export default function WholeManApp() {
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 768 : false));
   const [tab, setTab] = useState("checkin");
   const [anonId, setAnonId] = useState(null);
   const [spirit, setSpirit] = useState(3);
@@ -173,6 +174,12 @@ export default function WholeManApp() {
   // unread badge + history limit
   const [lastSeen, setLastSeen] = useState(0);
   const [historyLimit, setHistoryLimit] = useState(30);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // hidden staff access (no visible login, no separate app) — separate roles, PINs editable in-app
   const [welfarePin, setWelfarePin] = useState("2468");
@@ -437,14 +444,14 @@ export default function WholeManApp() {
     <button
       onClick={() => setTab(key)}
       style={{
-        position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 999,
+        position: "relative", display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "9px 12px" : "10px 16px", borderRadius: 999,
         border: `1px solid ${tab === key ? COLORS.soul : COLORS.border}`,
         background: tab === key ? "rgba(232,128,74,0.15)" : "transparent",
         color: tab === key ? COLORS.soul : COLORS.creamDim,
-        fontFamily: "Inter", fontWeight: 600, fontSize: 13, cursor: "pointer",
+        fontFamily: "Inter", fontWeight: 600, fontSize: isMobile ? 12 : 13, cursor: "pointer",
       }}
     >
-      <Icon size={15} /> {label}
+      <Icon size={isMobile ? 14 : 15} /> {label}
       {showBadge && (
         <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: COLORS.danger, border: `2px solid ${COLORS.bg}` }} />
       )}
@@ -485,27 +492,41 @@ export default function WholeManApp() {
   );
 
   const adminHeader = (title) => (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, gap: 10, flexWrap: "wrap" }}>
       <div>
         <div style={{ fontFamily: "IBM Plex Mono", fontSize: 11, letterSpacing: 1.5, color: COLORS.creamDim, textTransform: "uppercase" }}>Staff only</div>
-        <h1 style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 24, margin: "6px 0 0" }}>{title}</h1>
+        <h1 style={{ fontFamily: "Sora", fontWeight: 800, fontSize: isMobile ? 20 : 24, margin: "6px 0 0" }}>{title}</h1>
       </div>
       <button
         onClick={exitStaffView}
-        style={{ background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.creamDim, borderRadius: 8, padding: "8px 14px", fontSize: 12, cursor: "pointer" }}
+        style={{ background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.creamDim, borderRadius: 8, padding: "8px 14px", fontSize: 12, cursor: "pointer", width: isMobile ? "100%" : "auto" }}
       >
         Exit staff view
       </button>
     </div>
   );
 
+  const shellStyle = {
+    background: COLORS.bg,
+    minHeight: "100dvh",
+    borderRadius: isMobile ? 0 : 16,
+    padding: isMobile ? "20px 14px" : "28px 24px",
+    fontFamily: "Inter",
+    color: COLORS.cream,
+    width: "100%",
+    maxWidth: 1120,
+    margin: "0 auto",
+    boxSizing: "border-box",
+    overflowX: "hidden",
+  };
+
   if (adminRole === "welfare") {
     return (
-      <div style={{ background: COLORS.bg, minHeight: 640, borderRadius: 16, padding: "28px 24px", fontFamily: "Inter", color: COLORS.cream }}>
+      <div style={shellStyle}>
         <style>{FONT_IMPORT}</style>
         {adminHeader("Welfare team")}
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
           {subTabBtn("overview", "Overview")}
           {subTabBtn("chats", "Anonymous chats")}
           {subTabBtn("meet", "Meet-up requests")}
@@ -570,8 +591,8 @@ export default function WholeManApp() {
         )}
 
         {!dashLoading && dashView === "chats" && (
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-            <div style={{ flex: "0 0 220px" }}>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", flexDirection: isMobile ? "column" : "row" }}>
+            <div style={{ flex: isMobile ? "1 1 auto" : "0 0 220px", width: isMobile ? "100%" : "auto" }}>
               {chatIndex.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>No chat threads yet.</p>}
               {[...chatIndex].sort((a, b) => b.lastTs - a.lastTs).slice(0, chatListLimit).map((t) => (
                 <div
@@ -594,7 +615,7 @@ export default function WholeManApp() {
                 </button>
               )}
             </div>
-            <div style={{ flex: "1 1 300px" }}>
+            <div style={{ flex: "1 1 300px", minWidth: 0 }}>
               {!activeChatId && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>Select a thread to view and reply.</p>}
               {activeChatId && (
                 <>
@@ -662,13 +683,13 @@ export default function WholeManApp() {
 
   if (adminRole === "prayer") {
     return (
-      <div style={{ background: COLORS.bg, minHeight: 640, borderRadius: 16, padding: "28px 24px", fontFamily: "Inter", color: COLORS.cream }}>
+      <div style={shellStyle}>
         <style>{FONT_IMPORT}</style>
         {adminHeader("Prayer team")}
 
         {dashLoading && <div style={{ color: COLORS.creamDim }}>Loading…</div>}
         {!dashLoading && (
-          <div style={{ maxWidth: 520 }}>
+          <div style={{ maxWidth: 520, width: "100%" }}>
             {prayerRequests.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>No prayer requests yet.</p>}
             {prayerRequests.length > 0 && (
               <p style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 10 }}>
@@ -704,7 +725,7 @@ export default function WholeManApp() {
   }
 
   return (
-    <div style={{ background: COLORS.bg, minHeight: 640, borderRadius: 16, padding: "28px 24px", fontFamily: "Inter", color: COLORS.cream }}>
+    <div style={shellStyle}>
       <style>{FONT_IMPORT}</style>
 
       <div style={{ marginBottom: 22 }}>
@@ -714,7 +735,7 @@ export default function WholeManApp() {
         >
           CMDA LUTH · Whole Man Whole Community
         </div>
-        <h1 style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 26, margin: "6px 0 0" }}>
+        <h1 style={{ fontFamily: "Sora", fontWeight: 800, fontSize: isMobile ? 22 : 26, margin: "6px 0 0" }}>
           {tab === "prayer" ? "Prayer request" : tab === "messages" ? "Anonymous messages" : "How are you, whole self, today?"}
         </h1>
       </div>
@@ -789,10 +810,10 @@ export default function WholeManApp() {
 
       {/* CHECK IN */}
       {!loading && tab === "checkin" && !response && (
-        <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
-          <div style={{ flex: "0 0 220px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-            <WholenessRings spirit={spirit} soul={soul} body={body} />
-            <div style={{ display: "flex", gap: 14, fontSize: 12, fontFamily: "IBM Plex Mono" }}>
+        <div style={{ display: "flex", gap: isMobile ? 20 : 32, flexWrap: "wrap" }}>
+          <div style={{ flex: isMobile ? "1 1 100%" : "0 0 220px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <WholenessRings spirit={spirit} soul={soul} body={body} size={isMobile ? 170 : 200} />
+            <div style={{ display: "flex", gap: 14, fontSize: 12, fontFamily: "IBM Plex Mono", flexWrap: "wrap", justifyContent: "center" }}>
               <span style={{ color: COLORS.spirit }}>● Spirit</span>
               <span style={{ color: COLORS.soul }}>● Soul</span>
               <span style={{ color: COLORS.body }}>● Body</span>
@@ -800,7 +821,7 @@ export default function WholeManApp() {
             <div style={{ fontSize: 12, color: COLORS.creamDim, fontFamily: "IBM Plex Mono" }}>{anonId}</div>
           </div>
 
-          <div style={{ flex: "1 1 320px", background: COLORS.card, borderRadius: 14, padding: 22, border: `1px solid ${COLORS.border}` }}>
+          <div style={{ flex: isMobile ? "1 1 100%" : "1 1 320px", minWidth: 0, background: COLORS.card, borderRadius: 14, padding: isMobile ? 16 : 22, border: `1px solid ${COLORS.border}` }}>
             <Slider label="Spirit — walk with God" icon={<Heart size={16} />} value={spirit} onChange={setSpirit} color={COLORS.spirit} />
             <Slider label="Soul — mind & emotions" icon={<Brain size={16} />} value={soul} onChange={setSoul} color={COLORS.soul} />
             <Slider label="Body — rest & health" icon={<Activity size={16} />} value={body} onChange={setBody} color={COLORS.body} />
@@ -836,7 +857,7 @@ export default function WholeManApp() {
       )}
 
       {!loading && tab === "checkin" && response && (
-        <div style={{ maxWidth: 480, background: COLORS.card, borderRadius: 14, padding: 24, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ maxWidth: 480, width: "100%", background: COLORS.card, borderRadius: 14, padding: isMobile ? 18 : 24, border: `1px solid ${COLORS.border}` }}>
           <p style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 17, marginBottom: 12 }}>{response.message}</p>
           <p style={{ fontStyle: "italic", color: COLORS.creamDim, fontSize: 14, lineHeight: 1.5 }}>
             "{response.verse.text}" <span style={{ opacity: 0.7 }}>— {response.verse.ref}</span>
@@ -926,7 +947,7 @@ export default function WholeManApp() {
 
       {/* MESSAGES (student side, anonymous chat) */}
       {!loading && tab === "messages" && (
-        <div style={{ maxWidth: 460 }}>
+        <div style={{ maxWidth: 460, width: "100%" }}>
           <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 8 }}>
             Fully anonymous — tied only to <span style={{ fontFamily: "IBM Plex Mono", color: COLORS.cream }}>{anonId}</span>. No name, no number.
           </p>
@@ -967,7 +988,7 @@ export default function WholeManApp() {
 
       {/* PRAYER REQUEST */}
       {!loading && tab === "prayer" && (
-        <div style={{ maxWidth: 460 }}>
+        <div style={{ maxWidth: 460, width: "100%" }}>
           <div style={{ background: COLORS.card, borderRadius: 14, padding: 22, border: `1px solid ${COLORS.border}`, marginBottom: 20 }}>
             <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 14 }}>
               Tied to your anonymous ID (never your name) so you can check its status. Goes straight to the prayer sub-unit.
@@ -1016,7 +1037,7 @@ export default function WholeManApp() {
 
       {/* MY JOURNEY */}
       {!loading && tab === "history" && (
-        <div style={{ maxWidth: 500 }}>
+        <div style={{ maxWidth: 500, width: "100%" }}>
           {history.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 14 }}>No check-ins yet. Your first one will show up here.</p>}
           {history.length > 0 && (
             <p style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 12 }}>
