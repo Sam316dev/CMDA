@@ -514,7 +514,6 @@ export default function WholeManApp() {
     fontFamily: "Inter",
     color: COLORS.cream,
     width: "100%",
-    maxWidth: 1120,
     margin: "0 auto",
     boxSizing: "border-box",
     overflowX: "hidden",
@@ -650,7 +649,7 @@ export default function WholeManApp() {
         )}
 
         {!dashLoading && dashView === "meet" && (
-          <div style={{ maxWidth: 520 }}>
+          <div style={{ width: "100%" }}>
             {meetRequests.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>No meet-up requests yet.</p>}
             {[...meetRequests].reverse().slice(0, meetListLimit).map((m) => (
               <div key={m.ts} style={{ background: COLORS.card, borderRadius: 10, padding: 14, marginBottom: 10, border: `1px solid ${m.resolved ? COLORS.border : COLORS.danger}` }}>
@@ -689,7 +688,7 @@ export default function WholeManApp() {
 
         {dashLoading && <div style={{ color: COLORS.creamDim }}>Loading…</div>}
         {!dashLoading && (
-          <div style={{ maxWidth: 520, width: "100%" }}>
+          <div style={{ width: "100%" }}>
             {prayerRequests.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>No prayer requests yet.</p>}
             {prayerRequests.length > 0 && (
               <p style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 10 }}>
@@ -857,7 +856,7 @@ export default function WholeManApp() {
       )}
 
       {!loading && tab === "checkin" && response && (
-        <div style={{ maxWidth: 480, width: "100%", background: COLORS.card, borderRadius: 14, padding: isMobile ? 18 : 24, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ width: "100%", background: COLORS.card, borderRadius: 14, padding: isMobile ? 18 : 24, border: `1px solid ${COLORS.border}` }}>
           <p style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 17, marginBottom: 12 }}>{response.message}</p>
           <p style={{ fontStyle: "italic", color: COLORS.creamDim, fontSize: 14, lineHeight: 1.5 }}>
             "{response.verse.text}" <span style={{ opacity: 0.7 }}>— {response.verse.ref}</span>
@@ -947,7 +946,7 @@ export default function WholeManApp() {
 
       {/* MESSAGES (student side, anonymous chat) */}
       {!loading && tab === "messages" && (
-        <div style={{ maxWidth: 460, width: "100%" }}>
+        <div style={{ width: "100%" }}>
           <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 8 }}>
             Fully anonymous — tied only to <span style={{ fontFamily: "IBM Plex Mono", color: COLORS.cream }}>{anonId}</span>. No name, no number.
           </p>
@@ -988,7 +987,7 @@ export default function WholeManApp() {
 
       {/* PRAYER REQUEST */}
       {!loading && tab === "prayer" && (
-        <div style={{ maxWidth: 460, width: "100%" }}>
+        <div style={{ width: "100%" }}>
           <div style={{ background: COLORS.card, borderRadius: 14, padding: 22, border: `1px solid ${COLORS.border}`, marginBottom: 20 }}>
             <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 14 }}>
               Tied to your anonymous ID (never your name) so you can check its status. Goes straight to the prayer sub-unit.
@@ -1037,7 +1036,7 @@ export default function WholeManApp() {
 
       {/* MY JOURNEY */}
       {!loading && tab === "history" && (
-        <div style={{ maxWidth: 500, width: "100%" }}>
+        <div style={{ width: "100%" }}>
           {history.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 14 }}>No check-ins yet. Your first one will show up here.</p>}
           {history.length > 0 && (
             <p style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 12 }}>
