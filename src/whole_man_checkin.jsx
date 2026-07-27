@@ -523,8 +523,8 @@ export default function WholeManApp() {
 
   const shellStyle = {
     background: COLORS.bg,
-    minHeight: "100vh",
-    height: "100dvh",
+    minHeight: isMobile ? "80svh" : "100vh",
+    height: isMobile ? "auto" : "100dvh",
     borderRadius: isMobile ? 0 : 16,
     padding: isMobile ? "20px 14px" : "28px 24px",
     fontFamily: "Inter",
