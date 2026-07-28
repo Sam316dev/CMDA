@@ -181,21 +181,16 @@ export default function WholeManApp() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  useEffect(() => {
-    const prevBodyMargin = document.body.style.margin;
-    const prevBodyBackground = document.body.style.background;
-    const root = document.getElementById("root");
-    const prevRootMinHeight = root?.style.minHeight;
-    document.body.style.margin = "0";
-    document.body.style.background = COLORS.bg;
-    if (root) root.style.minHeight = "100vh";
-    return () => {
-      document.body.style.margin = prevBodyMargin;
-      document.body.style.background = prevBodyBackground;
-      if (root) root.style.minHeight = prevRootMinHeight || "";
-    };
-  }, []);
-
+ useEffect(() => {
+  const prevBodyMargin = document.body.style.margin;
+  const prevBodyBackground = document.body.style.background;
+  document.body.style.margin = "0";
+  document.body.style.background = COLORS.bg;
+  return () => {
+    document.body.style.margin = prevBodyMargin;
+    document.body.style.background = prevBodyBackground;
+  };
+}, []);
   // hidden staff access (no visible login, no separate app) — separate roles, PINs editable in-app
   const [welfarePin, setWelfarePin] = useState("2468");
   const [prayerPin, setPrayerPin] = useState("1357");
