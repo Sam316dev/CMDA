@@ -3,7 +3,8 @@ import {
   Heart, Brain, Activity, AlertCircle, Send, Users, Clock, CheckCircle2,
   ArrowLeft, MessageCircle, HandHeart, Handshake,
 } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');";
 
@@ -19,6 +20,7 @@ const COLORS = {
   danger: "#D9534F",
   success: "#4FA97A",
   prayer: "#F2C879",
+  amber: "#E8B84B",
   border: "rgba(246,241,231,0.12)",
 };
 
@@ -102,20 +104,54 @@ function computeResponse({ spirit, soul, body, urgent }) {
   return { escalate, message, verse };
 }
 
-async function safeGet(key, shared = false) {
+// Supabase-backed storage. The `shared` parameter is kept (unused) so every existing
+// call site (safeGet(key), safeGet(key, true), etc.) still works without changes —
+// there's no real per-user "personal" scope on Supabase, since that isolation was a
+// Claude-environment-specific feature. Anything genuinely personal (the anonymous ID
+// itself) now lives in the browser's own localStorage instead — see getOrCreateAnonId().
+async function safeGet(key) {
   try {
-    const res = await window.storage.get(key, shared);
-    return res ? JSON.parse(res.value) : null;
+    const { data, error } = await supabase.from("kv_store").select("value").eq("key", key).maybeSingle();
+    if (error) throw error;
+    return data ? data.value : null;
   } catch {
     return null;
   }
 }
-async function safeSet(key, value, shared = false) {
+async function safeSet(key, value) {
   try {
-    await window.storage.set(key, JSON.stringify(value), shared);
+    const { error } = await supabase.from("kv_store").upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) throw error;
     return true;
   } catch {
     return false;
+  }
+}
+async function safeDelete(key) {
+  try {
+    const { error } = await supabase.from("kv_store").delete().eq("key", key);
+    if (error) throw error;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The anonymous ID is generated once per browser and stored in localStorage directly —
+// synchronous, no network round-trip, and genuinely isolated per device (unlike a
+// key-value row in a shared database, which every visitor would otherwise collide on).
+function getOrCreateAnonId() {
+  try {
+    let id = window.localStorage.getItem("wholeman-anon-id");
+    if (!id) {
+      id = genAnonId();
+      window.localStorage.setItem("wholeman-anon-id", id);
+    }
+    return id;
+  } catch {
+    // localStorage unavailable (e.g. private browsing edge cases) — fall back to a
+    // session-only ID rather than crashing; it just won't persist across reloads.
+    return genAnonId();
   }
 }
 
@@ -150,6 +186,7 @@ export default function WholeManApp() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [activeChatMessages, setActiveChatMessages] = useState([]);
   const [responderReply, setResponderReply] = useState("");
+  const [clearChatConfirm, setClearChatConfirm] = useState(false);
 
   // prayer request state
   const [prayerText, setPrayerText] = useState("");
@@ -181,16 +218,17 @@ export default function WholeManApp() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
- useEffect(() => {
-  const prevBodyMargin = document.body.style.margin;
-  const prevBodyBackground = document.body.style.background;
-  document.body.style.margin = "0";
-  document.body.style.background = COLORS.bg;
-  return () => {
-    document.body.style.margin = prevBodyMargin;
-    document.body.style.background = prevBodyBackground;
-  };
-}, []);
+  useEffect(() => {
+    const prevBodyMargin = document.body.style.margin;
+    const prevBodyBackground = document.body.style.background;
+    document.body.style.margin = "0";
+    document.body.style.background = COLORS.bg;
+    return () => {
+      document.body.style.margin = prevBodyMargin;
+      document.body.style.background = prevBodyBackground;
+    };
+  }, []);
+
   // hidden staff access (no visible login, no separate app) — separate roles, PINs editable in-app
   const [welfarePin, setWelfarePin] = useState("2468");
   const [prayerPin, setPrayerPin] = useState("1357");
@@ -264,11 +302,7 @@ export default function WholeManApp() {
 
   useEffect(() => {
     (async () => {
-      let id = await safeGet("anon-id");
-      if (!id) {
-        id = genAnonId();
-        await safeSet("anon-id", id);
-      }
+      const id = getOrCreateAnonId();
       setAnonId(id);
       const h = await safeGet(`checkins:${id}`);
       setHistory(h || []);
@@ -286,16 +320,36 @@ export default function WholeManApp() {
     })();
   }, []);
 
+  const ARCHIVE_DAYS = 60;
+  const isOld = (ts) => Date.now() - ts > ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
+
   const loadDashboard = async () => {
     setDashLoading(true);
     const list = (await safeGet("wholeman-shared-log", true)) || [];
     setShared(list);
-    const mr = (await safeGet("meet-requests", true)) || [];
-    setMeetRequests(mr);
-    const ci = (await safeGet("chat-index", true)) || [];
-    setChatIndex(ci);
-    const pr = (await safeGet("prayer-requests", true)) || [];
-    setPrayerRequests(pr);
+
+    // meet-up requests: auto-archive only if already resolved AND old — never touch open ones
+    const mrRaw = (await safeGet("meet-requests", true)) || [];
+    const mrPruned = mrRaw.filter((m) => !(m.resolved && isOld(m.ts)));
+    if (mrPruned.length !== mrRaw.length) await safeSet("meet-requests", mrPruned, true);
+    setMeetRequests(mrPruned);
+
+    // chats: auto-archive only threads that have been answered (no reply needed) AND old — never touch ones awaiting reply
+    const ciRaw = (await safeGet("chat-index", true)) || [];
+    const ciPruned = ciRaw.filter((t) => !(!t.needsResponse && isOld(t.lastTs)));
+    const archivedChatIds = ciRaw.filter((t) => !t.needsResponse && isOld(t.lastTs)).map((t) => t.id);
+    if (ciPruned.length !== ciRaw.length) {
+      await safeSet("chat-index", ciPruned, true);
+      for (const id of archivedChatIds) await safeDelete(`chat:${id}`, true);
+    }
+    setChatIndex(ciPruned);
+
+    // prayer requests: auto-archive only if already prayed over AND old — never touch unprayed ones
+    const prRaw = (await safeGet("prayer-requests", true)) || [];
+    const prPruned = prRaw.filter((p) => !(p.prayed && isOld(p.ts)));
+    if (prPruned.length !== prRaw.length) await safeSet("prayer-requests", prPruned, true);
+    setPrayerRequests(prPruned);
+
     setDashLoading(false);
   };
 
@@ -324,6 +378,17 @@ export default function WholeManApp() {
     const lastResponderMsg = [...chatMessages].reverse().find((m) => m.from === "responder");
     return lastResponderMsg ? lastResponderMsg.ts > lastSeen : false;
   }, [chatMessages, lastSeen]);
+
+  // --- daily check-in limit ---
+  const todayKey = new Date().toDateString();
+  const alreadyCheckedInToday = useMemo(
+    () => history.some((h) => new Date(h.ts).toDateString() === todayKey),
+    [history, todayKey]
+  );
+  const todaysEntry = useMemo(
+    () => [...history].reverse().find((h) => new Date(h.ts).toDateString() === todayKey),
+    [history, todayKey]
+  );
 
   const submit = async () => {
     const entry = { ts: Date.now(), spirit, soul, body, note, urgent };
@@ -393,6 +458,28 @@ export default function WholeManApp() {
     setResponderReply("");
   };
 
+  // welfare team: delete a thread entirely
+  const deleteChatThread = async (id) => {
+    const idx = (await safeGet("chat-index", true)) || [];
+    const newIdx = idx.filter((t) => t.id !== id);
+    await safeSet("chat-index", newIdx, true);
+    await safeDelete(`chat:${id}`, true);
+    setChatIndex(newIdx);
+    if (activeChatId === id) {
+      setActiveChatId(null);
+      setActiveChatMessages([]);
+    }
+  };
+
+  // student: clear my own chat history
+  const deleteMyChat = async () => {
+    await safeDelete(`chat:${anonId}`, true);
+    setChatMessages([]);
+    const idx = (await safeGet("chat-index", true)) || [];
+    const newIdx = idx.filter((t) => t.id !== anonId);
+    await safeSet("chat-index", newIdx, true);
+  };
+
   // --- meet-up request (financial/practical, contact given knowingly) ---
   const submitMeetRequest = async () => {
     const list = (await safeGet("meet-requests", true)) || [];
@@ -403,6 +490,12 @@ export default function WholeManApp() {
 
   const resolveMeetRequest = async (ts) => {
     const updated = meetRequests.map((m) => (m.ts === ts ? { ...m, resolved: true } : m));
+    setMeetRequests(updated);
+    await safeSet("meet-requests", updated, true);
+  };
+
+  const deleteMeetRequest = async (ts) => {
+    const updated = meetRequests.filter((m) => m.ts !== ts);
     setMeetRequests(updated);
     await safeSet("meet-requests", updated, true);
   };
@@ -429,25 +522,38 @@ export default function WholeManApp() {
     await safeSet("prayer-requests", updated, true);
   };
 
+  const deletePrayerRequest = async (ts, id) => {
+    const updated = prayerRequests.filter((p) => !(p.ts === ts && p.id === id));
+    setPrayerRequests(updated);
+    await safeSet("prayer-requests", updated, true);
+    if (id === anonId) setMyPrayers((prev) => prev.filter((p) => p.ts !== ts));
+  };
+
+  // student: delete one of my own prayer requests
+  const deleteMyPrayer = async (ts) => {
+    const list = (await safeGet("prayer-requests", true)) || [];
+    const updated = list.filter((p) => !(p.ts === ts && p.id === anonId));
+    await safeSet("prayer-requests", updated, true);
+    setMyPrayers((prev) => prev.filter((p) => p.ts !== ts));
+  };
+
   const dashStats = useMemo(() => {
     if (shared.length === 0) return null;
     const byDay = {};
     shared.forEach((e) => {
       const d = new Date(e.ts);
-      const key = `${d.getMonth() + 1}/${d.getDate()}`;
-      if (!byDay[key]) byDay[key] = { day: key, spirit: [], soul: [], body: [] };
-      byDay[key].spirit.push(e.spirit);
-      byDay[key].soul.push(e.soul);
-      byDay[key].body.push(e.body);
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const label = `${d.getMonth() + 1}/${d.getDate()}`;
+      if (!byDay[dayStart]) byDay[dayStart] = { day: label, sortKey: dayStart, thriving: 0, gettingBy: 0, struggling: 0 };
+      const avg = (e.spirit + e.soul + e.body) / 3;
+      if (avg >= 4) byDay[dayStart].thriving += 1;
+      else if (avg >= 2.5) byDay[dayStart].gettingBy += 1;
+      else byDay[dayStart].struggling += 1;
     });
-    const trend = Object.values(byDay).map((d) => ({
-      day: d.day,
-      spirit: +(d.spirit.reduce((a, b) => a + b, 0) / d.spirit.length).toFixed(1),
-      soul: +(d.soul.reduce((a, b) => a + b, 0) / d.soul.length).toFixed(1),
-      body: +(d.body.reduce((a, b) => a + b, 0) / d.body.length).toFixed(1),
-    }));
+    const wellbeingBands = Object.values(byDay).sort((a, b) => a.sortKey - b.sortKey);
     const urgentOpen = shared.filter((e) => e.urgent || e.spirit <= 2 || e.soul <= 2 || e.body <= 2).filter((e) => !e.resolved);
-    return { trend, urgentOpen, total: shared.length };
+    const uniqueStudents = new Set(shared.map((e) => e.id)).size;
+    return { wellbeingBands, urgentOpen, total: shared.length, uniqueStudents };
   }, [shared]);
 
   const tabBtn = (key, label, Icon, showBadge) => (
@@ -555,23 +661,32 @@ export default function WholeManApp() {
                     <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 22 }}>{dashStats.total}</div>
                     <div style={{ fontSize: 12, color: COLORS.creamDim }}>total check-ins</div>
                   </div>
+                  <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 22 }}>{dashStats.uniqueStudents}</div>
+                    <div style={{ fontSize: 12, color: COLORS.creamDim }}>unique students reached</div>
+                  </div>
                   <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.danger}` }}>
                     <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 22, color: COLORS.danger }}>{dashStats.urgentOpen.length}</div>
                     <div style={{ fontSize: 12, color: COLORS.creamDim }}>need follow-up</div>
                   </div>
                 </div>
 
-                <div style={{ background: COLORS.card, borderRadius: 12, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 22, height: 220 }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 14, marginBottom: 4, color: COLORS.creamDim }}>Community wellbeing, at a glance</div>
+                <p style={{ fontSize: 11, color: COLORS.creamDim, marginBottom: 8 }}>
+                  Each check-in counted once, by day — <span style={{ color: COLORS.success }}>green = thriving</span>, <span style={{ color: COLORS.amber }}>amber = getting by</span>, <span style={{ color: COLORS.danger }}>red = struggling</span>.
+                </p>
+                <div style={{ background: COLORS.card, borderRadius: 12, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 22, height: 240 }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={dashStats.trend}>
+                    <BarChart data={dashStats.wellbeingBands}>
                       <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
                       <XAxis dataKey="day" stroke={COLORS.creamDim} fontSize={11} />
-                      <YAxis domain={[1, 5]} stroke={COLORS.creamDim} fontSize={11} />
+                      <YAxis allowDecimals={false} stroke={COLORS.creamDim} fontSize={11} />
                       <Tooltip contentStyle={{ background: COLORS.bg, border: `1px solid ${COLORS.border}` }} />
-                      <Line type="monotone" dataKey="spirit" stroke={COLORS.spirit} strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="soul" stroke={COLORS.soul} strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="body" stroke={COLORS.body} strokeWidth={2} dot={false} />
-                    </LineChart>
+                      <Legend wrapperStyle={{ fontSize: 12 }} formatter={(v) => (v === "thriving" ? "Thriving" : v === "gettingBy" ? "Getting by" : "Struggling")} />
+                      <Bar dataKey="thriving" stackId="wb" fill={COLORS.success} radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="gettingBy" stackId="wb" fill={COLORS.amber} radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="struggling" stackId="wb" fill={COLORS.danger} radius={[4, 4, 0, 0]} />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
 
@@ -630,6 +745,14 @@ export default function WholeManApp() {
               {!activeChatId && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>Select a thread to view and reply.</p>}
               {activeChatId && (
                 <>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                    <button
+                      onClick={() => deleteChatThread(activeChatId)}
+                      style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}
+                    >
+                      Delete thread
+                    </button>
+                  </div>
                   <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, padding: 16, minHeight: 160, marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                     {activeChatMessages.map((m, i) => (
                       <div key={i} style={{
@@ -671,11 +794,16 @@ export default function WholeManApp() {
                 </div>
                 <div style={{ fontSize: 13, marginBottom: 6 }}>{m.details}</div>
                 <div style={{ fontSize: 12, color: COLORS.creamDim, fontFamily: "IBM Plex Mono" }}>{m.id} · {m.contact}</div>
-                {!m.resolved && (
-                  <button onClick={() => resolveMeetRequest(m.ts)} style={{ marginTop: 10, background: "transparent", border: `1px solid ${COLORS.success}`, color: COLORS.success, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
-                    Mark handled
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  {!m.resolved && (
+                    <button onClick={() => resolveMeetRequest(m.ts)} style={{ background: "transparent", border: `1px solid ${COLORS.success}`, color: COLORS.success, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+                      Mark handled
+                    </button>
+                  )}
+                  <button onClick={() => deleteMeetRequest(m.ts)} style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+                    Delete
                   </button>
-                )}
+                </div>
                 {m.resolved && <div style={{ marginTop: 8, fontSize: 12, color: COLORS.success }}>Handled</div>}
               </div>
             ))}
@@ -712,13 +840,18 @@ export default function WholeManApp() {
                 <div style={{ fontSize: 13, marginBottom: 8 }}>{p.text}</div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: COLORS.creamDim }}>{new Date(p.ts).toLocaleString()}</span>
-                  {!p.prayed ? (
-                    <button onClick={() => markPrayed(p.ts, p.id)} style={{ background: "transparent", border: `1px solid ${COLORS.prayer}`, color: COLORS.prayer, borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer" }}>
-                      Mark prayed
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {!p.prayed ? (
+                      <button onClick={() => markPrayed(p.ts, p.id)} style={{ background: "transparent", border: `1px solid ${COLORS.prayer}`, color: COLORS.prayer, borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer" }}>
+                        Mark prayed
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 12, color: COLORS.prayer, alignSelf: "center" }}>Prayed 🙏</span>
+                    )}
+                    <button onClick={() => deletePrayerRequest(p.ts, p.id)} style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer" }}>
+                      Delete
                     </button>
-                  ) : (
-                    <span style={{ fontSize: 12, color: COLORS.prayer }}>Prayed 🙏</span>
-                  )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -820,7 +953,28 @@ export default function WholeManApp() {
       {loading && <div style={{ color: COLORS.creamDim }}>Loading…</div>}
 
       {/* CHECK IN */}
-      {!loading && tab === "checkin" && !response && (
+      {!loading && tab === "checkin" && !response && alreadyCheckedInToday && (
+        <div style={{ width: "100%", background: COLORS.card, borderRadius: 14, padding: isMobile ? 18 : 24, border: `1px solid ${COLORS.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.success, fontFamily: "Sora", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
+            <CheckCircle2 size={17} /> You've already checked in today
+          </div>
+          <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 14 }}>
+            One check-in a day keeps this meaningful. Come back tomorrow — here's what you logged today:
+          </p>
+          {todaysEntry && (
+            <div style={{ display: "flex", gap: 16, fontSize: 13, marginBottom: 14 }}>
+              <span style={{ color: COLORS.spirit }}>Spirit {todaysEntry.spirit}</span>
+              <span style={{ color: COLORS.soul }}>Soul {todaysEntry.soul}</span>
+              <span style={{ color: COLORS.body }}>Body {todaysEntry.body}</span>
+            </div>
+          )}
+          <p style={{ fontSize: 12, color: COLORS.creamDim }}>
+            Need to talk before then? Use the <strong style={{ color: COLORS.cream }}>Messages</strong> or <strong style={{ color: COLORS.cream }}>Prayer request</strong> tab any time.
+          </p>
+        </div>
+      )}
+
+      {!loading && tab === "checkin" && !response && !alreadyCheckedInToday && (
         <div style={{ display: "flex", gap: isMobile ? 20 : 32, flexWrap: "wrap" }}>
           <div style={{ flex: isMobile ? "1 1 100%" : "0 0 220px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
             <WholenessRings spirit={spirit} soul={soul} body={body} size={isMobile ? 170 : 200} />
@@ -962,6 +1116,24 @@ export default function WholeManApp() {
           <p style={{ fontSize: 13, color: COLORS.creamDim, marginBottom: 8 }}>
             Fully anonymous — tied only to <span style={{ fontFamily: "IBM Plex Mono", color: COLORS.cream }}>{anonId}</span>. No name, no number.
           </p>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            {chatMessages.length > 0 && !clearChatConfirm && (
+              <button onClick={() => setClearChatConfirm(true)} style={{ background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.creamDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+                Clear my chat
+              </button>
+            )}
+            {clearChatConfirm && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: COLORS.creamDim }}>Delete this whole conversation?</span>
+                <button onClick={() => { deleteMyChat(); setClearChatConfirm(false); }} style={{ background: COLORS.danger, border: "none", color: COLORS.cream, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+                  Yes, delete
+                </button>
+                <button onClick={() => setClearChatConfirm(false)} style={{ background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.creamDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
           <div style={{ background: "rgba(232,128,74,0.1)", border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
             <p style={{ fontSize: 12, color: COLORS.creamDim, lineHeight: 1.5, margin: 0 }}>
               The welfare team will reply as quickly as they can, but it isn't instant. If you can't wait, or this feels like an emergency,
@@ -1034,7 +1206,12 @@ export default function WholeManApp() {
               <div style={{ fontSize: 13, marginBottom: 6 }}>{p.text}</div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: COLORS.creamDim }}>{new Date(p.ts).toLocaleString()}</span>
-                <span style={{ fontSize: 12, color: p.prayed ? COLORS.prayer : COLORS.creamDim }}>{p.prayed ? "Prayed 🙏" : "Awaiting"}</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: p.prayed ? COLORS.prayer : COLORS.creamDim }}>{p.prayed ? "Prayed 🙏" : "Awaiting"}</span>
+                  <button onClick={() => deleteMyPrayer(p.ts)} style={{ background: "none", border: "none", color: COLORS.creamDim, fontSize: 11, textDecoration: "underline", cursor: "pointer", padding: 0 }}>
+                    delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}
