@@ -556,6 +556,75 @@ export default function WholeManApp() {
     return { wellbeingBands, urgentOpen, total: shared.length, uniqueStudents };
   }, [shared]);
 
+  // --- weekly review: rolling 7-day windows, compared to the 7 days before that ---
+  const weeklyReview = useMemo(() => {
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const thisWeekStart = now - 7 * oneDay;
+    const lastWeekStart = now - 14 * oneDay;
+
+    const thisWeekCheckins = shared.filter((e) => e.ts >= thisWeekStart);
+    const lastWeekCheckins = shared.filter((e) => e.ts >= lastWeekStart && e.ts < thisWeekStart);
+
+    const bandCounts = (list) => {
+      const bands = { thriving: 0, gettingBy: 0, struggling: 0 };
+      list.forEach((e) => {
+        const avg = (e.spirit + e.soul + e.body) / 3;
+        if (avg >= 4) bands.thriving += 1;
+        else if (avg >= 2.5) bands.gettingBy += 1;
+        else bands.struggling += 1;
+      });
+      return bands;
+    };
+
+    const thisBands = bandCounts(thisWeekCheckins);
+    const lastBands = bandCounts(lastWeekCheckins);
+
+    const thisUnique = new Set(thisWeekCheckins.map((e) => e.id)).size;
+    const lastUnique = new Set(lastWeekCheckins.map((e) => e.id)).size;
+
+    const thisUrgent = thisWeekCheckins.filter((e) => e.urgent || e.spirit <= 2 || e.soul <= 2 || e.body <= 2);
+    const thisUrgentResolved = thisUrgent.filter((e) => e.resolved).length;
+    const thisUrgentOpen = thisUrgent.length - thisUrgentResolved;
+
+    const thisChats = chatIndex.filter((t) => t.lastTs >= thisWeekStart);
+    const thisChatsAnswered = thisChats.filter((t) => !t.needsResponse).length;
+    const thisChatsOpen = thisChats.length - thisChatsAnswered;
+
+    const thisPrayers = prayerRequests.filter((p) => p.ts >= thisWeekStart);
+    const thisPrayersAnswered = thisPrayers.filter((p) => p.prayed).length;
+
+    // one plain sentence at the top, built from the numbers above
+    let summary;
+    if (thisWeekCheckins.length === 0) {
+      summary = "No check-ins recorded this week yet.";
+    } else if (thisUrgentOpen > 0) {
+      summary = `${thisUrgentOpen} ${thisUrgentOpen === 1 ? "student is" : "students are"} still waiting on follow-up from this week.`;
+    } else if (thisBands.struggling > lastBands.struggling) {
+      summary = "More students marked struggling this week than last week.";
+    } else {
+      summary = "A steady week. Everyone flagged so far has been followed up on.";
+    }
+
+    return {
+      checkinsThisWeek: thisWeekCheckins.length,
+      checkinsLastWeek: lastWeekCheckins.length,
+      uniqueThisWeek: thisUnique,
+      uniqueLastWeek: lastUnique,
+      thisBands,
+      lastBands,
+      urgentThisWeek: thisUrgent.length,
+      urgentResolved: thisUrgentResolved,
+      urgentOpen: thisUrgentOpen,
+      chatsThisWeek: thisChats.length,
+      chatsAnswered: thisChatsAnswered,
+      chatsOpen: thisChatsOpen,
+      prayersThisWeek: thisPrayers.length,
+      prayersAnswered: thisPrayersAnswered,
+      summary,
+    };
+  }, [shared, chatIndex, prayerRequests]);
+
   const tabBtn = (key, label, Icon, showBadge) => (
     <button
       onClick={() => setTab(key)}
@@ -645,6 +714,7 @@ export default function WholeManApp() {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
           {subTabBtn("overview", "Overview")}
+          {subTabBtn("thisweek", "This week")}
           {subTabBtn("chats", "Anonymous chats")}
           {subTabBtn("meet", "Meet-up requests")}
         </div>
@@ -714,6 +784,58 @@ export default function WholeManApp() {
               </>
             )}
           </>
+        )}
+
+        {!dashLoading && dashView === "thisweek" && (
+          <div style={{ width: "100%" }}>
+            <div style={{ background: COLORS.card, borderRadius: 12, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 20 }}>
+              <p style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 15, margin: 0 }}>{weeklyReview.summary}</p>
+              <p style={{ fontSize: 11, color: COLORS.creamDim, marginTop: 6 }}>Last 7 days, compared with the 7 days before that.</p>
+            </div>
+
+            <div style={{ display: "flex", gap: 16, marginBottom: 22, flexWrap: "wrap" }}>
+              <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 22 }}>{weeklyReview.checkinsThisWeek}</div>
+                <div style={{ fontSize: 12, color: COLORS.creamDim }}>check-ins this week ({weeklyReview.checkinsLastWeek} last week)</div>
+              </div>
+              <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 22 }}>{weeklyReview.uniqueThisWeek}</div>
+                <div style={{ fontSize: 12, color: COLORS.creamDim }}>students reached ({weeklyReview.uniqueLastWeek} last week)</div>
+              </div>
+            </div>
+
+            <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Wellbeing this week</div>
+            <div style={{ display: "flex", gap: 16, marginBottom: 22, flexWrap: "wrap" }}>
+              <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.success}` }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 20, color: COLORS.success }}>{weeklyReview.thisBands.thriving}</div>
+                <div style={{ fontSize: 12, color: COLORS.creamDim }}>thriving</div>
+              </div>
+              <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.amber}` }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 20, color: COLORS.amber }}>{weeklyReview.thisBands.gettingBy}</div>
+                <div style={{ fontSize: 12, color: COLORS.creamDim }}>getting by</div>
+              </div>
+              <div style={{ background: COLORS.card, borderRadius: 10, padding: "14px 20px", border: `1px solid ${COLORS.danger}` }}>
+                <div style={{ fontFamily: "Sora", fontWeight: 800, fontSize: 20, color: COLORS.danger }}>{weeklyReview.thisBands.struggling}</div>
+                <div style={{ fontSize: 12, color: COLORS.creamDim }}>struggling ({weeklyReview.lastBands.struggling} last week)</div>
+              </div>
+            </div>
+
+            <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Response record this week</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", background: COLORS.card, borderRadius: 10, padding: "10px 16px", border: `1px solid ${COLORS.border}` }}>
+                <span style={{ fontSize: 13 }}>Urgent check-ins</span>
+                <span style={{ fontSize: 13, color: COLORS.creamDim }}>{weeklyReview.urgentResolved} followed up, {weeklyReview.urgentOpen} still open</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", background: COLORS.card, borderRadius: 10, padding: "10px 16px", border: `1px solid ${COLORS.border}` }}>
+                <span style={{ fontSize: 13 }}>Anonymous chats</span>
+                <span style={{ fontSize: 13, color: COLORS.creamDim }}>{weeklyReview.chatsAnswered} answered, {weeklyReview.chatsOpen} still open</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", background: COLORS.card, borderRadius: 10, padding: "10px 16px", border: `1px solid ${COLORS.border}` }}>
+                <span style={{ fontSize: 13 }}>Prayer requests</span>
+                <span style={{ fontSize: 13, color: COLORS.creamDim }}>{weeklyReview.prayersAnswered} of {weeklyReview.prayersThisWeek} prayed over</span>
+              </div>
+            </div>
+          </div>
         )}
 
         {!dashLoading && dashView === "chats" && (
