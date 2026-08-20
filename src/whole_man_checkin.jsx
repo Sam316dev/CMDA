@@ -185,6 +185,7 @@ export default function WholeManApp() {
   const [chatIndex, setChatIndex] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [activeChatMessages, setActiveChatMessages] = useState([]);
+  const [chatThreadsMap, setChatThreadsMap] = useState({});
   const [responderReply, setResponderReply] = useState("");
   const [clearChatConfirm, setClearChatConfirm] = useState(false);
 
@@ -201,8 +202,8 @@ export default function WholeManApp() {
   const [prayerListLimit, setPrayerListLimit] = useState(20);
   const [urgentListLimit, setUrgentListLimit] = useState(20);
 
-  // forgot-PIN recovery
-  const MASTER_RESET_KEY = "WHOLEMAN-RESET-9182"; // give this only to the chapter lead / dev — change before real use
+  // forgot-PIN recovery — the actual key now lives hashed in Supabase, checked
+  // by reset_staff_pins(). Nothing secret is stored in this file anymore.
   const [forgotOpen, setForgotOpen] = useState(false);
   const [masterKeyInput, setMasterKeyInput] = useState("");
   const [resetDone, setResetDone] = useState(false);
@@ -229,9 +230,12 @@ export default function WholeManApp() {
     };
   }, []);
 
-  // hidden staff access (no visible login, no separate app) — separate roles, PINs editable in-app
-  const [welfarePin, setWelfarePin] = useState("2468");
-  const [prayerPin, setPrayerPin] = useState("1357");
+  // hidden staff access (no visible login, no separate app) — separate roles.
+  // PINs are no longer stored or checked in this file at all — that check now
+  // happens inside Supabase itself (see verify_staff_pin in security_hardening.sql).
+  // unlockedPin holds the PIN just used to get in, kept only in memory for this
+  // session, so change_staff_pin can prove "yes, I already know the old one."
+  const [unlockedPin, setUnlockedPin] = useState("");
   const [headerTaps, setHeaderTaps] = useState(0);
   const [pinPromptOpen, setPinPromptOpen] = useState(false);
   const [pinInput, setPinInput] = useState("");
@@ -239,6 +243,7 @@ export default function WholeManApp() {
   const [pinError, setPinError] = useState(false);
   const [newPin, setNewPin] = useState("");
   const [pinSaved, setPinSaved] = useState(false);
+  const [pinChecking, setPinChecking] = useState(false);
 
   const handleHeaderTap = () => {
     const next = headerTaps + 1;
@@ -251,14 +256,13 @@ export default function WholeManApp() {
     }
   };
 
-  const submitPin = () => {
-    if (pinInput === welfarePin) {
-      setAdminRole("welfare");
-      setPinPromptOpen(false);
-      setPinInput("");
-      setPinError(false);
-    } else if (pinInput === prayerPin) {
-      setAdminRole("prayer");
+  const submitPin = async () => {
+    setPinChecking(true);
+    const { data, error } = await supabase.rpc("verify_staff_pin", { check_pin: pinInput });
+    setPinChecking(false);
+    if (!error && (data === "welfare" || data === "prayer")) {
+      setAdminRole(data);
+      setUnlockedPin(pinInput);
       setPinPromptOpen(false);
       setPinInput("");
       setPinError(false);
@@ -269,28 +273,28 @@ export default function WholeManApp() {
   };
 
   const savePin = async () => {
-    if (!newPin.trim()) return;
-    if (adminRole === "welfare") {
-      setWelfarePin(newPin.trim());
-      await safeSet("staff-pin-welfare", newPin.trim(), true);
-    } else if (adminRole === "prayer") {
-      setPrayerPin(newPin.trim());
-      await safeSet("staff-pin-prayer", newPin.trim(), true);
+    if (!newPin.trim() || !adminRole) return;
+    const { data, error } = await supabase.rpc("change_staff_pin", {
+      role_name: adminRole,
+      old_pin: unlockedPin,
+      new_pin: newPin.trim(),
+    });
+    if (!error && data === true) {
+      setUnlockedPin(newPin.trim());
+      setNewPin("");
+      setPinSaved(true);
+      setTimeout(() => setPinSaved(false), 2000);
     }
-    setNewPin("");
-    setPinSaved(true);
-    setTimeout(() => setPinSaved(false), 2000);
   };
 
-  const exitStaffView = () => setAdminRole(null);
+  const exitStaffView = () => {
+    setAdminRole(null);
+    setUnlockedPin("");
+  };
 
   const resetPins = async () => {
-    if (masterKeyInput.trim() === MASTER_RESET_KEY) {
-      const w = "2468", p = "1357";
-      setWelfarePin(w);
-      setPrayerPin(p);
-      await safeSet("staff-pin-welfare", w, true);
-      await safeSet("staff-pin-prayer", p, true);
+    const { data, error } = await supabase.rpc("reset_staff_pins", { supplied_key: masterKeyInput.trim() });
+    if (!error && data === true) {
       setResetDone(true);
       setResetError(false);
       setMasterKeyInput("");
@@ -310,10 +314,6 @@ export default function WholeManApp() {
       setChatMessages(chat || []);
       const seen = await safeGet(`chat-lastseen:${id}`);
       setLastSeen(seen || 0);
-      const wp = await safeGet("staff-pin-welfare", true);
-      if (wp) setWelfarePin(wp);
-      const pp = await safeGet("staff-pin-prayer", true);
-      if (pp) setPrayerPin(pp);
       const prayers = (await safeGet("prayer-requests", true)) || [];
       setMyPrayers(prayers.filter((p) => p.id === id));
       setLoading(false);
@@ -325,30 +325,53 @@ export default function WholeManApp() {
 
   const loadDashboard = async () => {
     setDashLoading(true);
-    const list = (await safeGet("wholeman-shared-log", true)) || [];
-    setShared(list);
 
-    // meet-up requests: auto-archive only if already resolved AND old — never touch open ones
-    const mrRaw = (await safeGet("meet-requests", true)) || [];
-    const mrPruned = mrRaw.filter((m) => !(m.resolved && isOld(m.ts)));
-    if (mrPruned.length !== mrRaw.length) await safeSet("meet-requests", mrPruned, true);
-    setMeetRequests(mrPruned);
+    if (adminRole === "welfare") {
+      const { data, error } = await supabase.rpc("get_welfare_data", { check_pin: unlockedPin });
+      const rows = !error && data ? data : [];
+      const byKey = {};
+      rows.forEach((r) => { byKey[r.key] = r.value; });
 
-    // chats: auto-archive only threads that have been answered (no reply needed) AND old — never touch ones awaiting reply
-    const ciRaw = (await safeGet("chat-index", true)) || [];
-    const ciPruned = ciRaw.filter((t) => !(!t.needsResponse && isOld(t.lastTs)));
-    const archivedChatIds = ciRaw.filter((t) => !t.needsResponse && isOld(t.lastTs)).map((t) => t.id);
-    if (ciPruned.length !== ciRaw.length) {
-      await safeSet("chat-index", ciPruned, true);
-      for (const id of archivedChatIds) await safeDelete(`chat:${id}`, true);
+      const list = byKey["wholeman-shared-log"] || [];
+      setShared(list);
+
+      // meet-up requests: auto-archive only if already resolved AND old — never touch open ones
+      const mrRaw = byKey["meet-requests"] || [];
+      const mrPruned = mrRaw.filter((m) => !(m.resolved && isOld(m.ts)));
+      if (mrPruned.length !== mrRaw.length) await safeSet("meet-requests", mrPruned, true);
+      setMeetRequests(mrPruned);
+
+      // chats: auto-archive only threads that have been answered (no reply needed) AND old — never touch ones awaiting reply
+      const ciRaw = byKey["chat-index"] || [];
+      const ciPruned = ciRaw.filter((t) => !(!t.needsResponse && isOld(t.lastTs)));
+      const archivedChatIds = ciRaw.filter((t) => !t.needsResponse && isOld(t.lastTs)).map((t) => t.id);
+      if (ciPruned.length !== ciRaw.length) {
+        await safeSet("chat-index", ciPruned, true);
+        for (const id of archivedChatIds) await safeDelete(`chat:${id}`, true);
+      }
+      setChatIndex(ciPruned);
+
+      // every chat thread came back in the same gated call — keep them in a lookup
+      // so opening a thread is instant and doesn't need a second request
+      const threadsMap = {};
+      Object.keys(byKey).forEach((k) => {
+        if (k.startsWith("chat:")) threadsMap[k.slice(5)] = byKey[k] || [];
+      });
+      setChatThreadsMap(threadsMap);
     }
-    setChatIndex(ciPruned);
 
-    // prayer requests: auto-archive only if already prayed over AND old — never touch unprayed ones
-    const prRaw = (await safeGet("prayer-requests", true)) || [];
-    const prPruned = prRaw.filter((p) => !(p.prayed && isOld(p.ts)));
-    if (prPruned.length !== prRaw.length) await safeSet("prayer-requests", prPruned, true);
-    setPrayerRequests(prPruned);
+    if (adminRole === "prayer") {
+      const { data, error } = await supabase.rpc("get_prayer_data", { check_pin: unlockedPin });
+      const rows = !error && data ? data : [];
+      const byKey = {};
+      rows.forEach((r) => { byKey[r.key] = r.value; });
+
+      // prayer requests: auto-archive only if already prayed over AND old — never touch unprayed ones
+      const prRaw = byKey["prayer-requests"] || [];
+      const prPruned = prRaw.filter((p) => !(p.prayed && isOld(p.ts)));
+      if (prPruned.length !== prRaw.length) await safeSet("prayer-requests", prPruned, true);
+      setPrayerRequests(prPruned);
+    }
 
     setDashLoading(false);
   };
@@ -438,10 +461,9 @@ export default function WholeManApp() {
   };
 
   // --- anonymous chat (responder side) ---
-  const openChatThread = async (id) => {
+  const openChatThread = (id) => {
     setActiveChatId(id);
-    const msgs = (await safeGet(`chat:${id}`, true)) || [];
-    setActiveChatMessages(msgs);
+    setActiveChatMessages(chatThreadsMap[id] || []);
   };
 
   const sendResponderMessage = async () => {
@@ -450,6 +472,7 @@ export default function WholeManApp() {
     const updated = [...activeChatMessages, msg];
     setActiveChatMessages(updated);
     await safeSet(`chat:${activeChatId}`, updated, true);
+    setChatThreadsMap((prev) => ({ ...prev, [activeChatId]: updated }));
 
     const idx = (await safeGet("chat-index", true)) || [];
     const newIdx = idx.map((t) => (t.id === activeChatId ? { ...t, lastTs: msg.ts, lastPreview: msg.text.slice(0, 60), needsResponse: false } : t));
@@ -1030,7 +1053,9 @@ export default function WholeManApp() {
                 />
                 {pinError && <p style={{ color: COLORS.danger, fontSize: 12, marginBottom: 10 }}>Incorrect PIN.</p>}
                 <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <button onClick={submitPin} style={{ flex: 1, background: COLORS.soul, color: COLORS.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Unlock</button>
+                  <button onClick={submitPin} disabled={pinChecking} style={{ flex: 1, background: COLORS.soul, color: COLORS.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: pinChecking ? "default" : "pointer", opacity: pinChecking ? 0.7 : 1 }}>
+                    {pinChecking ? "Checking…" : "Unlock"}
+                  </button>
                   <button onClick={() => { setPinPromptOpen(false); setPinInput(""); setPinError(false); }} style={{ background: "transparent", color: COLORS.creamDim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 13, cursor: "pointer" }}>Cancel</button>
                 </div>
                 <button onClick={() => setForgotOpen(true)} style={{ background: "none", border: "none", color: COLORS.creamDim, fontSize: 12, textDecoration: "underline", cursor: "pointer", padding: 0 }}>
