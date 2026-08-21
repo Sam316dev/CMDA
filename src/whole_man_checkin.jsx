@@ -244,11 +244,16 @@ export default function WholeManApp() {
   const [newPin, setNewPin] = useState("");
   const [pinSaved, setPinSaved] = useState(false);
   const [pinChecking, setPinChecking] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState(0);
+  const [lockCountdown, setLockCountdown] = useState(0);
 
   const handleHeaderTap = () => {
     const next = headerTaps + 1;
     setHeaderTaps(next);
     if (next >= 5) {
+      // check for an existing lockout before showing the prompt
+      const savedLock = Number(window.localStorage.getItem("wm-pin-lock-until") || 0);
+      if (savedLock > Date.now()) setLockedUntil(savedLock);
       setPinPromptOpen(true);
       setHeaderTaps(0);
     } else {
@@ -256,17 +261,42 @@ export default function WholeManApp() {
     }
   };
 
+  // tick the lockout countdown once a second while it's active
+  useEffect(() => {
+    if (!lockedUntil) { setLockCountdown(0); return; }
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setLockCountdown(remaining);
+      if (remaining === 0) setLockedUntil(0);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [lockedUntil]);
+
   const submitPin = async () => {
+    if (lockedUntil > Date.now()) return;
     setPinChecking(true);
     const { data, error } = await supabase.rpc("verify_staff_pin", { check_pin: pinInput });
     setPinChecking(false);
     if (!error && (data === "welfare" || data === "prayer")) {
+      window.localStorage.removeItem("wm-pin-fail-count");
+      window.localStorage.removeItem("wm-pin-lock-until");
       setAdminRole(data);
       setUnlockedPin(pinInput);
       setPinPromptOpen(false);
       setPinInput("");
       setPinError(false);
     } else {
+      const fails = Number(window.localStorage.getItem("wm-pin-fail-count") || 0) + 1;
+      window.localStorage.setItem("wm-pin-fail-count", String(fails));
+      // 1st and 2nd wrong tries: no lockout. 3rd+: escalating cooldown.
+      if (fails >= 3) {
+        const lockSeconds = Math.min(15 * Math.pow(2, fails - 3), 600); // 15s, 30s, 60s ... capped at 10 min
+        const until = Date.now() + lockSeconds * 1000;
+        window.localStorage.setItem("wm-pin-lock-until", String(until));
+        setLockedUntil(until);
+      }
       setPinError(true);
       setPinInput("");
     }
@@ -562,8 +592,10 @@ export default function WholeManApp() {
 
   const dashStats = useMemo(() => {
     if (shared.length === 0) return null;
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const recentShared = shared.filter((e) => e.ts >= sevenDaysAgo);
     const byDay = {};
-    shared.forEach((e) => {
+    recentShared.forEach((e) => {
       const d = new Date(e.ts);
       const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
       const label = `${d.getMonth() + 1}/${d.getDate()}`;
@@ -579,7 +611,7 @@ export default function WholeManApp() {
     return { wellbeingBands, urgentOpen, total: shared.length, uniqueStudents };
   }, [shared]);
 
-  // --- weekly review: rolling 7-day windows, compared to the 7 days before that ---
+  // --- weekly review (welfare side): rolling 7-day window, compared to the 7 days before that ---
   const weeklyReview = useMemo(() => {
     const now = Date.now();
     const oneDay = 24 * 60 * 60 * 1000;
@@ -614,9 +646,6 @@ export default function WholeManApp() {
     const thisChatsAnswered = thisChats.filter((t) => !t.needsResponse).length;
     const thisChatsOpen = thisChats.length - thisChatsAnswered;
 
-    const thisPrayers = prayerRequests.filter((p) => p.ts >= thisWeekStart);
-    const thisPrayersAnswered = thisPrayers.filter((p) => p.prayed).length;
-
     // one plain sentence at the top, built from the numbers above
     let summary;
     if (thisWeekCheckins.length === 0) {
@@ -642,11 +671,39 @@ export default function WholeManApp() {
       chatsThisWeek: thisChats.length,
       chatsAnswered: thisChatsAnswered,
       chatsOpen: thisChatsOpen,
-      prayersThisWeek: thisPrayers.length,
-      prayersAnswered: thisPrayersAnswered,
       summary,
     };
-  }, [shared, chatIndex, prayerRequests]);
+  }, [shared, chatIndex]);
+
+  // --- weekly review (prayer team's own page): separate, prayer-only data ---
+  const prayerWeeklyReview = useMemo(() => {
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const thisWeekStart = now - 7 * oneDay;
+    const lastWeekStart = now - 14 * oneDay;
+
+    const thisWeek = prayerRequests.filter((p) => p.ts >= thisWeekStart);
+    const lastWeek = prayerRequests.filter((p) => p.ts >= lastWeekStart && p.ts < thisWeekStart);
+    const thisAnswered = thisWeek.filter((p) => p.prayed).length;
+    const thisOpen = thisWeek.length - thisAnswered;
+
+    let summary;
+    if (thisWeek.length === 0) {
+      summary = "No prayer requests recorded this week yet.";
+    } else if (thisOpen > 0) {
+      summary = `${thisOpen} prayer ${thisOpen === 1 ? "request is" : "requests are"} still awaiting prayer from this week.`;
+    } else {
+      summary = "Every prayer request this week has been prayed over.";
+    }
+
+    return {
+      requestsThisWeek: thisWeek.length,
+      requestsLastWeek: lastWeek.length,
+      answered: thisAnswered,
+      open: thisOpen,
+      summary,
+    };
+  }, [prayerRequests]);
 
   const tabBtn = (key, label, Icon, showBadge) => (
     <button
@@ -853,10 +910,6 @@ export default function WholeManApp() {
                 <span style={{ fontSize: 13 }}>Anonymous chats</span>
                 <span style={{ fontSize: 13, color: COLORS.creamDim }}>{weeklyReview.chatsAnswered} answered, {weeklyReview.chatsOpen} still open</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", background: COLORS.card, borderRadius: 10, padding: "10px 16px", border: `1px solid ${COLORS.border}` }}>
-                <span style={{ fontSize: 13 }}>Prayer requests</span>
-                <span style={{ fontSize: 13, color: COLORS.creamDim }}>{weeklyReview.prayersAnswered} of {weeklyReview.prayersThisWeek} prayed over</span>
-              </div>
             </div>
           </div>
         )}
@@ -974,6 +1027,13 @@ export default function WholeManApp() {
         {dashLoading && <div style={{ color: COLORS.creamDim }}>Loading…</div>}
         {!dashLoading && (
           <div style={{ width: "100%" }}>
+            <div style={{ background: COLORS.card, borderRadius: 12, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 20 }}>
+              <p style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 15, margin: 0 }}>{prayerWeeklyReview.summary}</p>
+              <p style={{ fontSize: 11, color: COLORS.creamDim, marginTop: 6 }}>
+                {prayerWeeklyReview.requestsThisWeek} requests this week ({prayerWeeklyReview.requestsLastWeek} last week) · {prayerWeeklyReview.answered} prayed over, {prayerWeeklyReview.open} still awaiting
+              </p>
+            </div>
+
             {prayerRequests.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13 }}>No prayer requests yet.</p>}
             {prayerRequests.length > 0 && (
               <p style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 10 }}>
@@ -1051,10 +1111,19 @@ export default function WholeManApp() {
                   autoFocus
                   style={{ width: "100%", background: COLORS.bg, border: `1px solid ${pinError ? COLORS.danger : COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 14, marginBottom: 10 }}
                 />
-                {pinError && <p style={{ color: COLORS.danger, fontSize: 12, marginBottom: 10 }}>Incorrect PIN.</p>}
+                {pinError && lockCountdown === 0 && <p style={{ color: COLORS.danger, fontSize: 12, marginBottom: 10 }}>Incorrect PIN.</p>}
+                {lockCountdown > 0 && (
+                  <p style={{ color: COLORS.danger, fontSize: 12, marginBottom: 10 }}>
+                    Too many wrong tries. Try again in {lockCountdown}s.
+                  </p>
+                )}
                 <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <button onClick={submitPin} disabled={pinChecking} style={{ flex: 1, background: COLORS.soul, color: COLORS.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: pinChecking ? "default" : "pointer", opacity: pinChecking ? 0.7 : 1 }}>
-                    {pinChecking ? "Checking…" : "Unlock"}
+                  <button
+                    onClick={submitPin}
+                    disabled={pinChecking || lockCountdown > 0}
+                    style={{ flex: 1, background: COLORS.soul, color: COLORS.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: pinChecking || lockCountdown > 0 ? "default" : "pointer", opacity: pinChecking || lockCountdown > 0 ? 0.5 : 1 }}
+                  >
+                    {pinChecking ? "Checking…" : lockCountdown > 0 ? `Wait ${lockCountdown}s` : "Unlock"}
                   </button>
                   <button onClick={() => { setPinPromptOpen(false); setPinInput(""); setPinError(false); }} style={{ background: "transparent", color: COLORS.creamDim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 13, cursor: "pointer" }}>Cancel</button>
                 </div>
