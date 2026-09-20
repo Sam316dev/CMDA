@@ -3,7 +3,7 @@ import {
   Heart, Brain, Activity, AlertCircle, Send, Users, Clock, CheckCircle2,
   ArrowLeft, MessageCircle, HandHeart, Handshake,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LineChart, Line } from "recharts";
 import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');";
@@ -23,6 +23,36 @@ const COLORS = {
   amber: "#E8B84B",
   border: "rgba(246,241,231,0.12)",
 };
+
+const CLASS_OPTIONS = [
+  { value: "100-medical", label: "100 Medical" },
+  { value: "100-dental", label: "100 Dental" },
+  { value: "200-medical", label: "200 Medical" },
+  { value: "200-dental", label: "200 Dental" },
+  { value: "300-medical", label: "300 Medical" },
+  { value: "300-dental", label: "300 Dental" },
+  { value: "400-medical", label: "400 Medical" },
+  { value: "400-dental", label: "400 Dental" },
+  { value: "500-medical", label: "500 Medical" },
+  { value: "500-dental", label: "500 Dental" },
+];
+
+const EXAM_TYPE_OPTIONS = [
+  { value: "in-course", label: "In-course" },
+  { value: "professional", label: "Professional" },
+  { value: "eop", label: "End-of-Posting" },
+];
+
+const CHART_COLORS = [
+  COLORS.soul,
+  COLORS.spirit,
+  COLORS.body,
+  COLORS.prayer,
+  COLORS.success,
+  COLORS.amber,
+  "#8AB4F8",
+  "#FF9AA2",
+];
 
 const VERSES = {
   spirit: { text: "Be strong and courageous — I will never leave you nor forsake you.", ref: "Joshua 1:9" },
@@ -239,13 +269,22 @@ export default function WholeManApp() {
   const [headerTaps, setHeaderTaps] = useState(0);
   const [pinPromptOpen, setPinPromptOpen] = useState(false);
   const [pinInput, setPinInput] = useState("");
-  const [adminRole, setAdminRole] = useState(null); // null | "welfare" | "prayer"
+  const [adminRole, setAdminRole] = useState(null); // null | "welfare" | "prayer" | "classrep" | "academicsec"
   const [pinError, setPinError] = useState(false);
   const [newPin, setNewPin] = useState("");
   const [pinSaved, setPinSaved] = useState(false);
   const [pinChecking, setPinChecking] = useState(false);
   const [lockedUntil, setLockedUntil] = useState(0);
   const [lockCountdown, setLockCountdown] = useState(0);
+  const [academicScores, setAcademicScores] = useState([]);
+  const [classRepClassId, setClassRepClassId] = useState(CLASS_OPTIONS[0].value);
+  const [classRepExamType, setClassRepExamType] = useState(EXAM_TYPE_OPTIONS[0].value);
+  const [classRepLabel, setClassRepLabel] = useState("");
+  const [classRepRawScores, setClassRepRawScores] = useState("");
+  const [classRepSubmitting, setClassRepSubmitting] = useState(false);
+  const [classRepMessage, setClassRepMessage] = useState({ type: null, text: "" });
+  const [academicFilterClassId, setAcademicFilterClassId] = useState(CLASS_OPTIONS[0].value);
+  const [academicDeleteBusyId, setAcademicDeleteBusyId] = useState(null);
 
   const handleHeaderTap = () => {
     const next = headerTaps + 1;
@@ -279,7 +318,7 @@ export default function WholeManApp() {
     setPinChecking(true);
     const { data, error } = await supabase.rpc("verify_staff_pin", { check_pin: pinInput });
     setPinChecking(false);
-    if (!error && (data === "welfare" || data === "prayer")) {
+    if (!error && ["welfare", "prayer", "classrep", "academicsec"].includes(data)) {
       window.localStorage.removeItem("wm-pin-fail-count");
       window.localStorage.removeItem("wm-pin-lock-until");
       setAdminRole(data);
@@ -352,6 +391,13 @@ export default function WholeManApp() {
 
   const ARCHIVE_DAYS = 60;
   const isOld = (ts) => Date.now() - ts > ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
+  const parseScoreInput = (raw) => raw
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s))
+    .filter((n) => Number.isFinite(n));
+  const scoreTokenCount = (raw) => raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).length;
 
   const loadDashboard = async () => {
     setDashLoading(true);
@@ -403,6 +449,21 @@ export default function WholeManApp() {
       setPrayerRequests(prPruned);
     }
 
+    if (adminRole === "classrep") {
+      setClassRepMessage({ type: null, text: "" });
+    }
+
+    if (adminRole === "academicsec") {
+      const { data, error } = await supabase.rpc("get_academic_data", { check_pin: unlockedPin });
+      const rows = !error && data ? data : [];
+      const normalized = rows.map((row) => ({
+        ...row,
+        average: Number(row.average),
+        count_below_50: Number(row.count_below_50),
+      }));
+      setAcademicScores(normalized);
+    }
+
     setDashLoading(false);
   };
 
@@ -417,6 +478,55 @@ export default function WholeManApp() {
   useEffect(() => {
     if (adminRole) loadDashboard();
   }, [adminRole]);
+
+  const classRepValidScores = useMemo(() => parseScoreInput(classRepRawScores), [classRepRawScores]);
+  const classRepTokenCount = useMemo(() => scoreTokenCount(classRepRawScores), [classRepRawScores]);
+  const classRepInvalidCount = Math.max(0, classRepTokenCount - classRepValidScores.length);
+
+  const submitClassScores = async () => {
+    if (!classRepLabel.trim()) {
+      setClassRepMessage({ type: "error", text: "Enter a course or posting label." });
+      return;
+    }
+    if (classRepValidScores.length === 0) {
+      setClassRepMessage({ type: "error", text: "Enter at least one valid score." });
+      return;
+    }
+    const average = classRepValidScores.reduce((sum, n) => sum + n, 0) / classRepValidScores.length;
+    const countBelow50 = classRepValidScores.filter((n) => n < 50).length;
+    setClassRepSubmitting(true);
+    const { data, error } = await supabase.rpc("submit_class_scores", {
+      check_pin: unlockedPin,
+      class_id: classRepClassId,
+      exam_type: classRepExamType,
+      label: classRepLabel.trim(),
+      average,
+      count_below_50: countBelow50,
+    });
+    setClassRepSubmitting(false);
+    if (!error && data === true) {
+      setClassRepMessage({
+        type: "success",
+        text: `Saved. Average ${average.toFixed(2)} · Below 50: ${countBelow50}`,
+      });
+      setClassRepLabel("");
+      setClassRepRawScores("");
+      return;
+    }
+    setClassRepMessage({ type: "error", text: "Submission failed. Check your PIN access and try again." });
+  };
+
+  const deleteAcademicScore = async (scoreId) => {
+    setAcademicDeleteBusyId(scoreId);
+    const { data, error } = await supabase.rpc("delete_academic_score", {
+      check_pin: unlockedPin,
+      score_id: scoreId,
+    });
+    setAcademicDeleteBusyId(null);
+    if (!error && data === true) {
+      setAcademicScores((prev) => prev.filter((row) => row.id !== scoreId));
+    }
+  };
 
   useEffect(() => {
     if (!anonId) return;
@@ -705,6 +815,31 @@ export default function WholeManApp() {
     };
   }, [prayerRequests]);
 
+  const academicScoresForClass = useMemo(
+    () => academicScores
+      .filter((row) => row.class_id === academicFilterClassId)
+      .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime()),
+    [academicScores, academicFilterClassId]
+  );
+
+  const academicLabelsForClass = useMemo(
+    () => [...new Set(academicScoresForClass.map((row) => row.label))],
+    [academicScoresForClass]
+  );
+
+  const academicChartData = useMemo(
+    () => academicScoresForClass.map((row) => ({
+      id: row.id,
+      submittedLabel: new Date(row.submitted_at).toLocaleDateString(),
+      submittedFull: new Date(row.submitted_at).toLocaleString(),
+      label: row.label,
+      average: row.average,
+      countBelow50: row.count_below_50,
+      [row.label]: row.average,
+    })),
+    [academicScoresForClass]
+  );
+
   const tabBtn = (key, label, Icon, showBadge) => (
     <button
       onClick={() => setTab(key)}
@@ -785,6 +920,162 @@ export default function WholeManApp() {
     overflowX: "hidden",
     overflowY: "auto",
   };
+
+  const academicTooltip = ({ active, payload }) => {
+    if (!active || !payload || payload.length === 0) return null;
+    const point = payload[0].payload;
+    return (
+      <div style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}>
+        <div style={{ fontSize: 12, color: COLORS.cream, marginBottom: 4 }}>{point.label}</div>
+        <div style={{ fontSize: 11, color: COLORS.creamDim, marginBottom: 4 }}>{point.submittedFull}</div>
+        <div style={{ fontSize: 12, color: COLORS.cream }}>Average: {Number(point.average).toFixed(2)}</div>
+        <div style={{ fontSize: 12, color: COLORS.cream }}>Below 50: {point.countBelow50}</div>
+      </div>
+    );
+  };
+
+  if (adminRole === "classrep") {
+    return (
+      <div style={shellStyle}>
+        <style>{FONT_IMPORT}</style>
+        {adminHeader("Class representative")}
+
+        <div style={{ width: "100%", maxWidth: 760 }}>
+          <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, padding: 18 }}>
+            <p style={{ fontSize: 13, color: COLORS.creamDim, marginTop: 0, marginBottom: 14 }}>
+              Enter scores, then submit. Raw scores stay in this browser; only average and count below 50 are sent.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <select
+                value={classRepClassId}
+                onChange={(e) => setClassRepClassId(e.target.value)}
+                style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13 }}
+              >
+                {CLASS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <select
+                value={classRepExamType}
+                onChange={(e) => setClassRepExamType(e.target.value)}
+                style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13 }}
+              >
+                {EXAM_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            <input
+              value={classRepLabel}
+              onChange={(e) => setClassRepLabel(e.target.value)}
+              placeholder="Course or posting label"
+              style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 10 }}
+            />
+            <textarea
+              value={classRepRawScores}
+              onChange={(e) => setClassRepRawScores(e.target.value)}
+              placeholder="Paste scores separated by commas or new lines"
+              rows={8}
+              style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 10, resize: "vertical" }}
+            />
+            <div style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 10 }}>
+              Valid scores: {classRepValidScores.length}
+              {classRepInvalidCount > 0 ? ` · Ignored invalid entries: ${classRepInvalidCount}` : ""}
+            </div>
+            {classRepMessage.type && (
+              <p style={{ color: classRepMessage.type === "success" ? COLORS.success : COLORS.danger, fontSize: 12, margin: "0 0 10px" }}>
+                {classRepMessage.text}
+              </p>
+            )}
+            <button
+              onClick={submitClassScores}
+              disabled={classRepSubmitting}
+              style={{ width: "100%", background: COLORS.soul, color: COLORS.bg, border: "none", borderRadius: 8, padding: "10px 0", fontFamily: "Sora", fontWeight: 700, fontSize: 13, cursor: classRepSubmitting ? "default" : "pointer", opacity: classRepSubmitting ? 0.7 : 1 }}
+            >
+              {classRepSubmitting ? "Submitting…" : "Submit class scores"}
+            </button>
+          </div>
+        </div>
+
+        {pinChanger}
+      </div>
+    );
+  }
+
+  if (adminRole === "academicsec") {
+    return (
+      <div style={shellStyle}>
+        <style>{FONT_IMPORT}</style>
+        {adminHeader("Academic secretary")}
+
+        {dashLoading && <div style={{ color: COLORS.creamDim }}>Loading…</div>}
+        {!dashLoading && (
+          <div style={{ width: "100%" }}>
+            <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, padding: 16, marginBottom: 16 }}>
+              <select
+                value={academicFilterClassId}
+                onChange={(e) => setAcademicFilterClassId(e.target.value)}
+                style={{ width: isMobile ? "100%" : 240, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 9, fontSize: 13, marginBottom: 12 }}
+              >
+                {CLASS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+
+              {academicScoresForClass.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13, margin: 0 }}>No entries yet for this class.</p>}
+              {academicScoresForClass.length > 0 && (
+                <div style={{ height: 280 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={academicChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                      <XAxis dataKey="submittedLabel" stroke={COLORS.creamDim} fontSize={11} />
+                      <YAxis stroke={COLORS.creamDim} fontSize={11} />
+                      <Tooltip content={academicTooltip} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      {academicLabelsForClass.map((label, i) => (
+                        <Line
+                          key={label}
+                          type="monotone"
+                          dataKey={label}
+                          name={label}
+                          connectNulls={false}
+                          stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                          strokeWidth={2}
+                          dot={{ r: 4 }}
+                          activeDot={{ r: 6 }}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            {[...academicScoresForClass].reverse().map((row) => (
+              <div key={row.id} style={{ background: COLORS.card, borderRadius: 10, padding: 12, marginBottom: 8, border: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 13 }}>{row.label}</div>
+                  <div style={{ fontSize: 12, color: COLORS.creamDim }}>
+                    {row.exam_type} · Avg {Number(row.average).toFixed(2)} · Below 50: {row.count_below_50}
+                  </div>
+                  <div style={{ fontSize: 11, color: COLORS.creamDim }}>{new Date(row.submitted_at).toLocaleString()}</div>
+                </div>
+                <button
+                  onClick={() => deleteAcademicScore(row.id)}
+                  disabled={academicDeleteBusyId === row.id}
+                  style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: academicDeleteBusyId === row.id ? "default" : "pointer", opacity: academicDeleteBusyId === row.id ? 0.7 : 1 }}
+                >
+                  {academicDeleteBusyId === row.id ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {pinChanger}
+      </div>
+    );
+  }
 
   if (adminRole === "welfare") {
     return (
