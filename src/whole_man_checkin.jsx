@@ -3,7 +3,7 @@ import {
   Heart, Brain, Activity, AlertCircle, Send, Users, Clock, CheckCircle2,
   ArrowLeft, MessageCircle, HandHeart, Handshake,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LineChart, Line } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');";
@@ -25,33 +25,18 @@ const COLORS = {
 };
 
 const CLASS_OPTIONS = [
-  { value: "100-medical", label: "100 Medical" },
-  { value: "100-dental", label: "100 Dental" },
-  { value: "200-medical", label: "200 Medical" },
-  { value: "200-dental", label: "200 Dental" },
-  { value: "300-medical", label: "300 Medical" },
-  { value: "300-dental", label: "300 Dental" },
-  { value: "400-medical", label: "400 Medical" },
-  { value: "400-dental", label: "400 Dental" },
-  { value: "500-medical", label: "500 Medical" },
-  { value: "500-dental", label: "500 Dental" },
+  { value: "200L", label: "200L" },
+  { value: "300L", label: "300L" },
+  { value: "400L", label: "400L" },
+  { value: "500L", label: "500L" },
+  { value: "600L", label: "600L" },
 ];
+const ALL_CLASSES_OPTION = { value: "all", label: "All classes" };
 
 const EXAM_TYPE_OPTIONS = [
   { value: "in-course", label: "In-course" },
   { value: "professional", label: "Professional" },
   { value: "eop", label: "End-of-Posting" },
-];
-
-const CHART_COLORS = [
-  COLORS.soul,
-  COLORS.spirit,
-  COLORS.body,
-  COLORS.prayer,
-  COLORS.success,
-  COLORS.amber,
-  "#8AB4F8",
-  "#FF9AA2",
 ];
 
 const VERSES = {
@@ -68,6 +53,32 @@ function genAnonId() {
   for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
+
+const createSectionState = (index) => ({
+  name: `Section ${index + 1}`,
+  rawScores: "",
+  maxScore: "100",
+});
+
+const parseScoreTokens = (raw) => raw
+  .split(/[\n,]+/)
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const analyzeScoreInput = (raw, maxScore) => {
+  const tokens = parseScoreTokens(raw);
+  const validScores = [];
+  let invalidCount = 0;
+  tokens.forEach((token) => {
+    const value = Number(token);
+    if (!Number.isFinite(value) || value < 0 || value > maxScore) {
+      invalidCount += 1;
+      return;
+    }
+    validScores.push(value);
+  });
+  return { validScores, tokenCount: tokens.length, invalidCount };
+};
 
 function WholenessRings({ spirit, soul, body, size = 200 }) {
   const c = size / 2;
@@ -280,11 +291,17 @@ export default function WholeManApp() {
   const [classRepClassId, setClassRepClassId] = useState(CLASS_OPTIONS[0].value);
   const [classRepExamType, setClassRepExamType] = useState(EXAM_TYPE_OPTIONS[0].value);
   const [classRepLabel, setClassRepLabel] = useState("");
-  const [classRepRawScores, setClassRepRawScores] = useState("");
+  const [classRepHasMultipleSections, setClassRepHasMultipleSections] = useState(false);
+  const [classRepSectionCount, setClassRepSectionCount] = useState(1);
+  const [classRepUseSharedMax, setClassRepUseSharedMax] = useState(true);
+  const [classRepSharedMaxScore, setClassRepSharedMaxScore] = useState("100");
+  const [classRepThresholdPercent, setClassRepThresholdPercent] = useState("50");
+  const [classRepSections, setClassRepSections] = useState([createSectionState(0)]);
   const [classRepSubmitting, setClassRepSubmitting] = useState(false);
   const [classRepMessage, setClassRepMessage] = useState({ type: null, text: "" });
-  const [academicFilterClassId, setAcademicFilterClassId] = useState(CLASS_OPTIONS[0].value);
+  const [academicFilterClassId, setAcademicFilterClassId] = useState(ALL_CLASSES_OPTION.value);
   const [academicDeleteBusyId, setAcademicDeleteBusyId] = useState(null);
+  const [academicError, setAcademicError] = useState("");
 
   const handleHeaderTap = () => {
     const next = headerTaps + 1;
@@ -391,14 +408,6 @@ export default function WholeManApp() {
 
   const ARCHIVE_DAYS = 60;
   const isOld = (ts) => Date.now() - ts > ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
-  const parseScoreInput = (raw) => raw
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => Number.isFinite(n));
-  const scoreTokenCount = (raw) => raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).length;
-
   const loadDashboard = async () => {
     setDashLoading(true);
 
@@ -455,11 +464,26 @@ export default function WholeManApp() {
 
     if (adminRole === "academicsec") {
       const { data, error } = await supabase.rpc("get_academic_data", { check_pin: unlockedPin });
+      if (error) {
+        setAcademicError(error.message || "Failed to load academic data.");
+        console.error("get_academic_data failed", error);
+      } else {
+        setAcademicError("");
+      }
       const rows = !error && data ? data : [];
       const normalized = rows.map((row) => ({
         ...row,
         average: Number(row.average),
         count_below_50: Number(row.count_below_50),
+        max_score: Number.isFinite(Number(row.max_score)) && Number(row.max_score) > 0 ? Number(row.max_score) : 100,
+        threshold_percent: Number.isFinite(Number(row.threshold_percent)) ? Number(row.threshold_percent) : 50,
+        count_below_threshold: Number.isFinite(Number(row.count_below_threshold))
+          ? Number(row.count_below_threshold)
+          : Number(row.count_below_50),
+        section_name: row.section_name || "Section",
+        section_order: Number.isFinite(Number(row.section_order)) ? Number(row.section_order) : 1,
+        section_count: Number.isFinite(Number(row.section_count)) ? Number(row.section_count) : 1,
+        submission_group_id: row.submission_group_id || `legacy-${row.id}`,
       }));
       setAcademicScores(normalized);
     }
@@ -479,38 +503,96 @@ export default function WholeManApp() {
     if (adminRole) loadDashboard();
   }, [adminRole]);
 
-  const classRepValidScores = useMemo(() => parseScoreInput(classRepRawScores), [classRepRawScores]);
-  const classRepTokenCount = useMemo(() => scoreTokenCount(classRepRawScores), [classRepRawScores]);
-  const classRepInvalidCount = Math.max(0, classRepTokenCount - classRepValidScores.length);
+  useEffect(() => {
+    const desiredCount = classRepHasMultipleSections ? classRepSectionCount : 1;
+    setClassRepSections((prev) => {
+      const next = [...prev];
+      while (next.length < desiredCount) next.push(createSectionState(next.length));
+      return next.slice(0, desiredCount).map((section, index) => ({
+        ...section,
+        name: section.name || `Section ${index + 1}`,
+      }));
+    });
+  }, [classRepHasMultipleSections, classRepSectionCount]);
+
+  useEffect(() => {
+    if (adminRole !== "academicsec") return;
+    const pollId = setInterval(() => {
+      loadDashboard();
+    }, 12000);
+    return () => clearInterval(pollId);
+  }, [adminRole, unlockedPin]);
+
+  const classRepSectionStats = useMemo(() => classRepSections.map((section) => {
+    const maxScore = classRepUseSharedMax ? Number(classRepSharedMaxScore) : Number(section.maxScore);
+    if (!Number.isFinite(maxScore) || maxScore <= 0) {
+      return { validScores: [], tokenCount: 0, invalidCount: 0, maxScore: null };
+    }
+    const parsed = analyzeScoreInput(section.rawScores, maxScore);
+    return { ...parsed, maxScore };
+  }), [classRepSections, classRepUseSharedMax, classRepSharedMaxScore]);
 
   const submitClassScores = async () => {
     if (!classRepLabel.trim()) {
       setClassRepMessage({ type: "error", text: "Enter a course or posting label." });
       return;
     }
-    if (classRepValidScores.length === 0) {
-      setClassRepMessage({ type: "error", text: "Enter at least one valid score." });
+    const thresholdPercent = Number(classRepThresholdPercent);
+    if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0 || thresholdPercent > 100) {
+      setClassRepMessage({ type: "error", text: "Threshold must be between 0 and 100%." });
       return;
     }
-    const average = classRepValidScores.reduce((sum, n) => sum + n, 0) / classRepValidScores.length;
-    const countBelow50 = classRepValidScores.filter((n) => n < 50).length;
+    const sectionErrors = classRepSections.map((section, index) => {
+      if (!section.name.trim()) return `Give section ${index + 1} a name.`;
+      if (!classRepSectionStats[index].maxScore) return `Enter a valid maximum score for section ${index + 1}.`;
+      if (classRepSectionStats[index].validScores.length === 0) return `Enter at least one valid score for section ${index + 1}.`;
+      return null;
+    }).filter(Boolean);
+    if (sectionErrors.length > 0) {
+      setClassRepMessage({ type: "error", text: sectionErrors[0] });
+      return;
+    }
+    const submissionGroupId = `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setClassRepSubmitting(true);
-    const { data, error } = await supabase.rpc("submit_class_scores", {
-      check_pin: unlockedPin,
-      class_id: classRepClassId,
-      exam_type: classRepExamType,
-      label: classRepLabel.trim(),
-      average,
-      count_below_50: countBelow50,
-    });
+    let failed = false;
+    const sectionSummaries = [];
+    for (let i = 0; i < classRepSections.length; i++) {
+      const section = classRepSections[i];
+      const stats = classRepSectionStats[i];
+      const average = stats.validScores.reduce((sum, n) => sum + n, 0) / stats.validScores.length;
+      const thresholdScore = (thresholdPercent / 100) * stats.maxScore;
+      const countBelowThreshold = stats.validScores.filter((n) => n < thresholdScore).length;
+      sectionSummaries.push(
+        `${section.name.trim()}: ${average.toFixed(2)} / ${stats.maxScore} (${((average / stats.maxScore) * 100).toFixed(1)}%), below ${thresholdPercent.toFixed(1)}%: ${countBelowThreshold}`
+      );
+      const { data, error } = await supabase.rpc("submit_class_scores", {
+        check_pin: unlockedPin,
+        class_id: classRepClassId,
+        exam_type: classRepExamType,
+        label: classRepLabel.trim(),
+        average,
+        count_below_50: countBelowThreshold,
+        submission_group_id: submissionGroupId,
+        section_name: section.name.trim(),
+        section_order: i + 1,
+        section_count: classRepSections.length,
+        max_score: stats.maxScore,
+        threshold_percent: thresholdPercent,
+        threshold_score: thresholdScore,
+        count_below_threshold: countBelowThreshold,
+      });
+      if (error || data !== true) {
+        failed = true;
+        console.error("submit_class_scores failed", { error, data, section: i + 1 });
+        break;
+      }
+    }
     setClassRepSubmitting(false);
-    if (!error && data === true) {
+    if (!failed) {
       setClassRepMessage({
         type: "success",
-        text: `Saved. Average ${average.toFixed(2)} · Below 50: ${countBelow50}`,
+        text: `Saved ${classRepSections.length} section${classRepSections.length > 1 ? "s" : ""}. ${sectionSummaries.join(" | ")}`,
       });
-      setClassRepLabel("");
-      setClassRepRawScores("");
       return;
     }
     setClassRepMessage({ type: "error", text: "Submission failed. Check your PIN access and try again." });
@@ -525,6 +607,11 @@ export default function WholeManApp() {
     setAcademicDeleteBusyId(null);
     if (!error && data === true) {
       setAcademicScores((prev) => prev.filter((row) => row.id !== scoreId));
+      return;
+    }
+    if (error) {
+      setAcademicError(error.message || "Failed to delete entry.");
+      console.error("delete_academic_score failed", error);
     }
   };
 
@@ -815,30 +902,49 @@ export default function WholeManApp() {
     };
   }, [prayerRequests]);
 
-  const academicScoresForClass = useMemo(
-    () => academicScores
-      .filter((row) => row.class_id === academicFilterClassId)
-      .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime()),
-    [academicScores, academicFilterClassId]
-  );
+  const academicFilterOptions = useMemo(() => {
+    const known = new Set(CLASS_OPTIONS.map((option) => option.value));
+    const legacy = [...new Set(academicScores.map((row) => row.class_id).filter((value) => value && !known.has(value)))];
+    return [
+      ALL_CLASSES_OPTION,
+      ...CLASS_OPTIONS,
+      ...legacy.map((value) => ({ value, label: `${value} (legacy)` })),
+    ];
+  }, [academicScores]);
 
-  const academicLabelsForClass = useMemo(
-    () => [...new Set(academicScoresForClass.map((row) => row.label))],
-    [academicScoresForClass]
-  );
+  const academicScoresForClass = useMemo(() => academicScores
+    .filter((row) => academicFilterClassId === ALL_CLASSES_OPTION.value || row.class_id === academicFilterClassId)
+    .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime()), [academicScores, academicFilterClassId]);
 
   const academicChartData = useMemo(
-    () => academicScoresForClass.map((row) => ({
-      id: row.id,
-      submittedLabel: new Date(row.submitted_at).toLocaleDateString(),
-      submittedFull: new Date(row.submitted_at).toLocaleString(),
-      label: row.label,
-      average: row.average,
-      countBelow50: row.count_below_50,
-      [row.label]: row.average,
-    })),
+    () => academicScoresForClass.map((row) => {
+      const averagePercent = row.max_score > 0 ? (row.average / row.max_score) * 100 : 0;
+      return {
+        id: row.id,
+        submittedLabel: new Date(row.submitted_at).toLocaleDateString(),
+        submittedFull: new Date(row.submitted_at).toLocaleString(),
+        classId: row.class_id,
+        label: row.label,
+        sectionName: row.section_name,
+        average: row.average,
+        maxScore: row.max_score,
+        averagePercent,
+        thresholdPercent: row.threshold_percent,
+        countBelowThreshold: row.count_below_threshold,
+      };
+    }),
     [academicScoresForClass]
   );
+
+  const academicGroups = useMemo(() => {
+    const grouped = {};
+    academicScoresForClass.forEach((row) => {
+      const key = row.submission_group_id || `legacy-${row.id}`;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(row);
+    });
+    return Object.values(grouped).map((rows) => [...rows].sort((a, b) => a.section_order - b.section_order));
+  }, [academicScoresForClass]);
 
   const tabBtn = (key, label, Icon, showBadge) => (
     <button
@@ -926,10 +1032,10 @@ export default function WholeManApp() {
     const point = payload[0].payload;
     return (
       <div style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}>
-        <div style={{ fontSize: 12, color: COLORS.cream, marginBottom: 4 }}>{point.label}</div>
+        <div style={{ fontSize: 12, color: COLORS.cream, marginBottom: 4 }}>{point.label} · {point.sectionName}</div>
         <div style={{ fontSize: 11, color: COLORS.creamDim, marginBottom: 4 }}>{point.submittedFull}</div>
-        <div style={{ fontSize: 12, color: COLORS.cream }}>Average: {Number(point.average).toFixed(2)}</div>
-        <div style={{ fontSize: 12, color: COLORS.cream }}>Below 50: {point.countBelow50}</div>
+        <div style={{ fontSize: 12, color: COLORS.cream }}>Average: {Number(point.average).toFixed(2)} / {Number(point.maxScore).toFixed(2)} ({Number(point.averagePercent).toFixed(1)}%)</div>
+        <div style={{ fontSize: 12, color: COLORS.cream }}>Below {Number(point.thresholdPercent).toFixed(1)}%: {point.countBelowThreshold}</div>
       </div>
     );
   };
@@ -943,7 +1049,7 @@ export default function WholeManApp() {
         <div style={{ width: "100%", maxWidth: 760 }}>
           <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, padding: 18 }}>
             <p style={{ fontSize: 13, color: COLORS.creamDim, marginTop: 0, marginBottom: 14 }}>
-              Enter scores, then submit. Raw scores stay in this browser; only average and count below 50 are sent.
+              Enter scores, then submit. Raw scores stay in this browser; only section aggregates are sent.
             </p>
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
               <select
@@ -965,23 +1071,115 @@ export default function WholeManApp() {
                 ))}
               </select>
             </div>
+            <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: COLORS.creamDim }}>
+                <input
+                  type="radio"
+                  checked={!classRepHasMultipleSections}
+                  onChange={() => {
+                    setClassRepHasMultipleSections(false);
+                    setClassRepSectionCount(1);
+                  }}
+                />
+                One section
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: COLORS.creamDim }}>
+                <input
+                  type="radio"
+                  checked={classRepHasMultipleSections}
+                  onChange={() => setClassRepHasMultipleSections(true)}
+                />
+                Multiple sections
+              </label>
+              {classRepHasMultipleSections && (
+                <select
+                  value={classRepSectionCount}
+                  onChange={(e) => setClassRepSectionCount(Number(e.target.value))}
+                  style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: "6px 8px", fontSize: 12 }}
+                >
+                  {[2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} sections</option>)}
+                </select>
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: COLORS.creamDim }}>
+                <input
+                  type="checkbox"
+                  checked={classRepUseSharedMax}
+                  onChange={(e) => setClassRepUseSharedMax(e.target.checked)}
+                />
+                Use one maximum score for all sections
+              </label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={classRepThresholdPercent}
+                onChange={(e) => setClassRepThresholdPercent(e.target.value)}
+                placeholder="Threshold (%)"
+                style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13 }}
+              />
+            </div>
+            {classRepUseSharedMax && (
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={classRepSharedMaxScore}
+                onChange={(e) => setClassRepSharedMaxScore(e.target.value)}
+                placeholder="Maximum obtainable score"
+                style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 10 }}
+              />
+            )}
             <input
               value={classRepLabel}
               onChange={(e) => setClassRepLabel(e.target.value)}
               placeholder="Course or posting label"
               style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 10 }}
             />
-            <textarea
-              value={classRepRawScores}
-              onChange={(e) => setClassRepRawScores(e.target.value)}
-              placeholder="Paste scores separated by commas or new lines"
-              rows={8}
-              style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 10, resize: "vertical" }}
-            />
-            <div style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 10 }}>
-              Valid scores: {classRepValidScores.length}
-              {classRepInvalidCount > 0 ? ` · Ignored invalid entries: ${classRepInvalidCount}` : ""}
-            </div>
+            {classRepSections.map((section, index) => {
+              const stats = classRepSectionStats[index] || { validScores: [], invalidCount: 0 };
+              const computedMax = classRepUseSharedMax ? Number(classRepSharedMaxScore) : Number(section.maxScore);
+              const thresholdPercent = Number(classRepThresholdPercent);
+              const thresholdScore = Number.isFinite(computedMax) && Number.isFinite(thresholdPercent)
+                ? (thresholdPercent / 100) * computedMax
+                : null;
+              return (
+                <div key={`section-${index}`} style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 8 }}>
+                    <input
+                      value={section.name}
+                      onChange={(e) => setClassRepSections((prev) => prev.map((item, i) => i === index ? { ...item, name: e.target.value } : item))}
+                      placeholder={`Section ${index + 1} name`}
+                      style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13 }}
+                    />
+                    {!classRepUseSharedMax && (
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={section.maxScore}
+                        onChange={(e) => setClassRepSections((prev) => prev.map((item, i) => i === index ? { ...item, maxScore: e.target.value } : item))}
+                        placeholder="Maximum obtainable score"
+                        style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13 }}
+                      />
+                    )}
+                  </div>
+                  <textarea
+                    value={section.rawScores}
+                    onChange={(e) => setClassRepSections((prev) => prev.map((item, i) => i === index ? { ...item, rawScores: e.target.value } : item))}
+                    placeholder="Paste scores separated by commas or new lines"
+                    rows={6}
+                    style={{ width: "100%", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 10, fontSize: 13, marginBottom: 8, resize: "vertical" }}
+                  />
+                  <div style={{ fontSize: 12, color: COLORS.creamDim }}>
+                    Valid scores: {stats.validScores.length}
+                    {stats.invalidCount > 0 ? ` · Ignored invalid/out-of-range entries: ${stats.invalidCount}` : ""}
+                    {thresholdScore !== null && Number.isFinite(thresholdScore) ? ` · Below ${Number(classRepThresholdPercent || 0).toFixed(1)}% means below ${thresholdScore.toFixed(2)} / ${Number(computedMax || 0).toFixed(2)}` : ""}
+                  </div>
+                </div>
+              );
+            })}
             {classRepMessage.type && (
               <p style={{ color: classRepMessage.type === "success" ? COLORS.success : COLORS.danger, fontSize: 12, margin: "0 0 10px" }}>
                 {classRepMessage.text}
@@ -1012,63 +1210,73 @@ export default function WholeManApp() {
         {!dashLoading && (
           <div style={{ width: "100%" }}>
             <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, padding: 16, marginBottom: 16 }}>
-              <select
-                value={academicFilterClassId}
-                onChange={(e) => setAcademicFilterClassId(e.target.value)}
-                style={{ width: isMobile ? "100%" : 240, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 9, fontSize: 13, marginBottom: 12 }}
-              >
-                {CLASS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                <select
+                  value={academicFilterClassId}
+                  onChange={(e) => setAcademicFilterClassId(e.target.value)}
+                  style={{ width: isMobile ? "100%" : 260, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.cream, padding: 9, fontSize: 13 }}
+                >
+                  {academicFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={loadDashboard}
+                  style={{ background: "transparent", border: `1px solid ${COLORS.border}`, color: COLORS.cream, borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer" }}
+                >
+                  Refresh
+                </button>
+              </div>
 
+              {academicError && <p style={{ color: COLORS.danger, fontSize: 12, marginTop: 0 }}>{academicError}</p>}
               {academicScoresForClass.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13, margin: 0 }}>No entries yet for this class.</p>}
               {academicScoresForClass.length > 0 && (
                 <div style={{ height: 280 }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={academicChartData}>
+                    <BarChart data={academicChartData}>
                       <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                      <XAxis dataKey="submittedLabel" stroke={COLORS.creamDim} fontSize={11} />
-                      <YAxis stroke={COLORS.creamDim} fontSize={11} />
+                      <XAxis dataKey="sectionName" stroke={COLORS.creamDim} fontSize={11} />
+                      <YAxis stroke={COLORS.creamDim} fontSize={11} domain={[0, 100]} />
                       <Tooltip content={academicTooltip} />
                       <Legend wrapperStyle={{ fontSize: 12 }} />
-                      {academicLabelsForClass.map((label, i) => (
-                        <Line
-                          key={label}
-                          type="monotone"
-                          dataKey={label}
-                          name={label}
-                          connectNulls={false}
-                          stroke={CHART_COLORS[i % CHART_COLORS.length]}
-                          strokeWidth={2}
-                          dot={{ r: 4 }}
-                          activeDot={{ r: 6 }}
-                        />
-                      ))}
-                    </LineChart>
+                      <Bar dataKey="averagePercent" name="Average (%)" fill={COLORS.soul} radius={[6, 6, 0, 0]} />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}
             </div>
 
-            {[...academicScoresForClass].reverse().map((row) => (
-              <div key={row.id} style={{ background: COLORS.card, borderRadius: 10, padding: 12, marginBottom: 8, border: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 13 }}>{row.label}</div>
-                  <div style={{ fontSize: 12, color: COLORS.creamDim }}>
-                    {row.exam_type} · Avg {Number(row.average).toFixed(2)} · Below 50: {row.count_below_50}
+            {[...academicGroups].reverse().map((groupRows) => {
+              const groupHead = groupRows[0];
+              return (
+                <div key={groupHead.submission_group_id || groupHead.id} style={{ background: COLORS.card, borderRadius: 10, padding: 12, marginBottom: 10, border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontFamily: "Sora", fontWeight: 700, fontSize: 13 }}>{groupHead.label}</div>
+                  <div style={{ fontSize: 12, color: COLORS.creamDim, marginBottom: 8 }}>
+                    {groupHead.class_id} · {groupHead.exam_type} · {new Date(groupHead.submitted_at).toLocaleString()} · {groupRows.length} section{groupRows.length > 1 ? "s" : ""}
                   </div>
-                  <div style={{ fontSize: 11, color: COLORS.creamDim }}>{new Date(row.submitted_at).toLocaleString()}</div>
+                  {groupRows.map((row) => {
+                    const averagePercent = row.max_score > 0 ? (row.average / row.max_score) * 100 : 0;
+                    return (
+                      <div key={row.id} style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 8, marginTop: 8, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <div>
+                          <div style={{ fontSize: 12, color: COLORS.cream }}>{row.section_name}</div>
+                          <div style={{ fontSize: 12, color: COLORS.creamDim }}>
+                            Avg {Number(row.average).toFixed(2)} / {Number(row.max_score).toFixed(2)} ({averagePercent.toFixed(1)}%) · Below {Number(row.threshold_percent).toFixed(1)}%: {row.count_below_threshold}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => deleteAcademicScore(row.id)}
+                          disabled={academicDeleteBusyId === row.id}
+                          style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: academicDeleteBusyId === row.id ? "default" : "pointer", opacity: academicDeleteBusyId === row.id ? 0.7 : 1 }}
+                        >
+                          {academicDeleteBusyId === row.id ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
-                <button
-                  onClick={() => deleteAcademicScore(row.id)}
-                  disabled={academicDeleteBusyId === row.id}
-                  style={{ background: "transparent", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: academicDeleteBusyId === row.id ? "default" : "pointer", opacity: academicDeleteBusyId === row.id ? 0.7 : 1 }}
-                >
-                  {academicDeleteBusyId === row.id ? "Deleting…" : "Delete"}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
