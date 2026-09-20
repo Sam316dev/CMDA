@@ -40,7 +40,7 @@ const ALL_CLASSES_OPTION = { value: "all", label: "All classes" };
 
 const EXAM_TYPE_OPTIONS = [
   { value: "in-course", label: "In-course" },
-  { value: "professional", label: "Professional" },
+  { value: "professional", label: "Professional exams" },
   { value: "eop", label: "End-of-Posting" },
 ];
 
