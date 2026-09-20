@@ -25,11 +25,16 @@ const COLORS = {
 };
 
 const CLASS_OPTIONS = [
-  { value: "200L", label: "200L" },
-  { value: "300L", label: "300L" },
-  { value: "400L", label: "400L" },
-  { value: "500L", label: "500L" },
-  { value: "600L", label: "600L" },
+  { value: "200L MBBS", label: "200L Medical" },
+  { value: "200L BDS", label: "200L Dental" },
+  { value: "300L MBBS", label: "300L Medical" },
+  { value: "300L BDS", label: "300L Dental" },
+  { value: "400L MBBS", label: "400L Medical" },
+  { value: "400L BDS", label: "400L Dental" },
+  { value: "500L MBBS", label: "500L Medical" },
+  { value: "500L BDS", label: "500L Dental" },
+  { value: "600L MBBS", label: "600L Medical" },
+  { value: "600L BDS", label: "600L Dental" }
 ];
 const ALL_CLASSES_OPTION = { value: "all", label: "All classes" };
 
@@ -519,7 +524,7 @@ export default function WholeManApp() {
     if (adminRole !== "academicsec") return;
     const pollId = setInterval(() => {
       loadDashboard();
-    }, 12000);
+    }, 20000);
     return () => clearInterval(pollId);
   }, [adminRole, unlockedPin]);
 
@@ -916,25 +921,6 @@ export default function WholeManApp() {
     .filter((row) => academicFilterClassId === ALL_CLASSES_OPTION.value || row.class_id === academicFilterClassId)
     .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime()), [academicScores, academicFilterClassId]);
 
-  const academicChartData = useMemo(
-    () => academicScoresForClass.map((row) => {
-      const averagePercent = row.max_score > 0 ? (row.average / row.max_score) * 100 : 0;
-      return {
-        id: row.id,
-        submittedLabel: new Date(row.submitted_at).toLocaleDateString(),
-        submittedFull: new Date(row.submitted_at).toLocaleString(),
-        classId: row.class_id,
-        label: row.label,
-        sectionName: row.section_name,
-        average: row.average,
-        maxScore: row.max_score,
-        averagePercent,
-        thresholdPercent: row.threshold_percent,
-        countBelowThreshold: row.count_below_threshold,
-      };
-    }),
-    [academicScoresForClass]
-  );
 
   const academicGroups = useMemo(() => {
     const grouped = {};
@@ -1025,19 +1011,6 @@ export default function WholeManApp() {
     boxSizing: "border-box",
     overflowX: "hidden",
     overflowY: "auto",
-  };
-
-  const academicTooltip = ({ active, payload }) => {
-    if (!active || !payload || payload.length === 0) return null;
-    const point = payload[0].payload;
-    return (
-      <div style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}>
-        <div style={{ fontSize: 12, color: COLORS.cream, marginBottom: 4 }}>{point.label} · {point.sectionName}</div>
-        <div style={{ fontSize: 11, color: COLORS.creamDim, marginBottom: 4 }}>{point.submittedFull}</div>
-        <div style={{ fontSize: 12, color: COLORS.cream }}>Average: {Number(point.average).toFixed(2)} / {Number(point.maxScore).toFixed(2)} ({Number(point.averagePercent).toFixed(1)}%)</div>
-        <div style={{ fontSize: 12, color: COLORS.cream }}>Below {Number(point.thresholdPercent).toFixed(1)}%: {point.countBelowThreshold}</div>
-      </div>
-    );
   };
 
   if (adminRole === "classrep") {
@@ -1229,22 +1202,6 @@ export default function WholeManApp() {
               </div>
 
               {academicError && <p style={{ color: COLORS.danger, fontSize: 12, marginTop: 0 }}>{academicError}</p>}
-              {academicScoresForClass.length === 0 && <p style={{ color: COLORS.creamDim, fontSize: 13, margin: 0 }}>No entries yet for this class.</p>}
-              {academicScoresForClass.length > 0 && (
-                <div style={{ height: 280 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={academicChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                      <XAxis dataKey="sectionName" stroke={COLORS.creamDim} fontSize={11} />
-                      <YAxis stroke={COLORS.creamDim} fontSize={11} domain={[0, 100]} />
-                      <Tooltip content={academicTooltip} />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="averagePercent" name="Average (%)" fill={COLORS.soul} radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
 
             {[...academicGroups].reverse().map((groupRows) => {
               const groupHead = groupRows[0];
